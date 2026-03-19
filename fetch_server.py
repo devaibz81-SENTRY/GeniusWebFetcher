@@ -11,8 +11,14 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Default target URL
-TARGET_URL = "https://nebl.web.geniussports.com/competitions/?WHurl=%2Fstatistics%2Fplayer%3F"
+# Default target URLs
+GENIUS_EMBED_BASE = "https://hosted.dcd.shared.geniussports.com/embednf//en"
+TARGET_URL_PLAYER = f"{GENIUS_EMBED_BASE}/statistics/player"
+TARGET_URL_TEAM = f"{GENIUS_EMBED_BASE}/statistics/team"
+TARGET_URL_STANDINGS = f"{GENIUS_EMBED_BASE}/standings"
+
+# Default target URL for compatibility
+TARGET_URL = TARGET_URL_PLAYER
 
 # Cache for fetched data
 cached_data = {
