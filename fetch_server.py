@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -405,7 +405,25 @@ def fetch():
 
 @app.route('/data')
 def get_data():
-    """Return cached data as JSON"""
+    """Return cached data as JSON - auto-refreshes if older than 60 seconds"""
+    
+    AUTO_REFRESH_SECONDS = 60
+    
+    fetched_at = cached_data.get('fetched_at')
+    if fetched_at:
+        try:
+            last_fetch = datetime.fromisoformat(fetched_at)
+            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
+                html_content, error = fetch_from_genius()
+                if not error:
+                    headers, data = extract_player_stats(html_content)
+                    cached_data['headers'] = headers
+                    cached_data['data'] = data
+                    cached_data['fetched_at'] = datetime.now().isoformat()
+                    cached_data['status'] = 'success'
+        except:
+            pass
+    
     if not cached_data.get('data'):
         return jsonify({
             'error': 'No data available. Call /fetch first.',
