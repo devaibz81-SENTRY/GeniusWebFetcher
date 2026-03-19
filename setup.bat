@@ -6,7 +6,7 @@ echo ========================================
 echo.
 echo Installing Python dependencies...
 echo.
-pip install flask requests beautifulsoup4 lxml gunicorn
+pip install flask requests beautifulsoup4 gunicorn
 echo.
 echo ========================================
 echo   Installation Complete!

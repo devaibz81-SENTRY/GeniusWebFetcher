@@ -290,7 +290,7 @@ def extract_player_stats(html_content):
     """
     Extract player statistics table from HTML
     """
-    soup = BeautifulSoup(html_content, 'lxml')
+    soup = BeautifulSoup(html_content, 'html.parser')
     
     # Look for table elements
     tables = soup.find_all('table')
