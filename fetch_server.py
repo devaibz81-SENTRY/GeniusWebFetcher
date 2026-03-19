@@ -11,11 +11,11 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Default target URLs
-GENIUS_EMBED_BASE = "https://hosted.dcd.shared.geniussports.com/embednf//en"
-TARGET_URL_PLAYER = f"{GENIUS_EMBED_BASE}/statistics/player"
-TARGET_URL_TEAM = f"{GENIUS_EMBED_BASE}/statistics/team"
-TARGET_URL_STANDINGS = f"{GENIUS_EMBED_BASE}/standings"
+# Default target URLs - Using JSON API endpoint for player statistics
+GENIUS_EMBED_BASE = "https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en"
+TARGET_URL_PLAYER = f"{GENIUS_EMBED_BASE}/statistics/player?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+TARGET_URL_TEAM = f"{GENIUS_EMBED_BASE}/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+TARGET_URL_STANDINGS = f"{GENIUS_EMBED_BASE}/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
 
 # Default target URL for compatibility
 TARGET_URL = TARGET_URL_PLAYER
@@ -298,11 +298,10 @@ def extract_player_stats(html_content):
     """
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Look for table elements
-    tables = soup.find_all('table')
-    
     players_data = []
     headers = []
+    
+    tables = soup.find_all('table')
     
     for table in tables:
         rows = table.find_all('tr')
@@ -320,17 +319,19 @@ def extract_player_stats(html_content):
                     if row_data:
                         players_data.append(row_data)
     
-    # If no tables found, try div-based layout
-    if not players_data:
-        # Look for player stats in div structure
-        stat_rows = soup.select('[class*="player"], [class*="stat"]')
-        for row in stat_rows:
-            cells = row.find_all(['div', 'span', 'td'])
-            if cells and len(cells) > 3:
-                row_data = [c.get_text(strip=True) for c in cells]
-                players_data.append(row_data)
-    
     return headers, players_data
+
+
+def parse_json_response(response_text):
+    """
+    Parse the JSON response from Genius Sports embed endpoint
+    The response is JSON with an 'html' field containing escaped HTML
+    """
+    try:
+        data = json.loads(response_text)
+        return data.get('html', '')
+    except json.JSONDecodeError:
+        return response_text
 
 
 def fetch_from_genius():
@@ -340,14 +341,15 @@ def fetch_from_genius():
     try:
         headers_req = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.5',
         }
         
         response = requests.get(TARGET_URL, headers=headers_req, timeout=30)
         response.raise_for_status()
         
-        return response.text, None
+        html_content = parse_json_response(response.text)
+        return html_content, None
         
     except requests.exceptions.RequestException as e:
         return None, str(e)
