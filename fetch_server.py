@@ -35,8 +35,9 @@ cached_leaders = {
     "status": "empty"
 }
 
-# Leaders URL
+# Global Leaders URL - from nebl.web.geniussports.com
 TARGET_URL_LEADERS = f"{GENIUS_EMBED_BASE}/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+TARGET_URL_GLOBAL_LEADERS = "https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
 
 # HTML Template for the interface
 HTML_TEMPLATE = """
@@ -349,10 +350,10 @@ def extract_leaders_data(html_content):
     Extract leaders data from HTML
     Returns list of categories with top 10 players each
     """
-    soup = BeautifulSoup(html_content, 'html.parser')
+    import re
     
     categories = [
-        {"name": "Efficiency", "search": "Efficiency", "abbr": "EFF"},
+        {"name": "Efficiency", "search": "EfficiencyCustom", "abbr": "EFF"},
         {"name": "Average Points", "search": "Average points", "abbr": "PPG"},
         {"name": "Average Assists", "search": "Average assists", "abbr": "APG"},
         {"name": "Average Rebounds", "search": "Average total rebounds", "abbr": "RPG"},
@@ -371,23 +372,29 @@ def extract_leaders_data(html_content):
         if cat_index == -1:
             continue
         
-        # Get section of HTML for this category
         section_start = cat_index
-        section_end = cat_index + 4000
+        section_end = cat_index + 10000
         section = html_content[section_start:section_end]
         
         players = []
         
-        # Find all player entries - pattern: <a>name</a> then <td>team</td> then <td>value</td>
-        import re
-        pattern = r'<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*>([^<]*)</td>\s*<td[^>]*>([\d.]+)</td>'
-        matches = re.findall(pattern, section, re.IGNORECASE)
+        # Find table rows with player data
+        # Pattern: Player in <a href="/person/...">, Team in <td class="team"><a href="/team/...">, Value in <td>
+        rows = re.findall(
+            r'<a href="[^"]*person[^"]*">([^<]+)</a>\s*</td>\s*<td[^>]*class="team"[^>]*>\s*<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*>([\d.]+)</td>',
+            section,
+            re.IGNORECASE
+        )
         
-        for i, match in enumerate(matches[:10]):  # Top 10
+        for i, row in enumerate(rows[:10]):
+            name = row[0].strip()
+            team = row[1].strip()
+            value = row[2].strip()
+            
             players.append({
-                "name": match[0].strip(),
-                "team": match[1].strip(),
-                "value": match[2].strip()
+                "name": name,
+                "team": team,
+                "value": value
             })
         
         if players:
