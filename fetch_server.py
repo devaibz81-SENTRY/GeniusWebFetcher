@@ -28,6 +28,16 @@ cached_data = {
     "status": "empty"
 }
 
+# Leaders cache
+cached_leaders = {
+    "categories": [],
+    "fetched_at": None,
+    "status": "empty"
+}
+
+# Leaders URL
+TARGET_URL_LEADERS = f"{GENIUS_EMBED_BASE}/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+
 # HTML Template for the interface
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -334,6 +344,83 @@ def parse_json_response(response_text):
         return response_text
 
 
+def extract_leaders_data(html_content):
+    """
+    Extract leaders data from HTML
+    Returns list of categories with top 10 players each
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    categories = [
+        {"name": "Efficiency", "search": "Efficiency", "abbr": "EFF"},
+        {"name": "Average Points", "search": "Average points", "abbr": "PPG"},
+        {"name": "Average Assists", "search": "Average assists", "abbr": "APG"},
+        {"name": "Average Rebounds", "search": "Average total rebounds", "abbr": "RPG"},
+        {"name": "Field Goal %", "search": "Field goal percentage", "abbr": "FG%"},
+        {"name": "3-Point %", "search": "3 Point percentage", "abbr": "3P%"},
+        {"name": "Free Throw %", "search": "Free throw percentage", "abbr": "FT%"},
+        {"name": "Average Minutes", "search": "Average minutes", "abbr": "MPG"},
+    ]
+    
+    result = []
+    
+    for cat in categories:
+        search_term = cat["search"]
+        cat_index = html_content.find(search_term)
+        
+        if cat_index == -1:
+            continue
+        
+        # Get section of HTML for this category
+        section_start = cat_index
+        section_end = cat_index + 4000
+        section = html_content[section_start:section_end]
+        
+        players = []
+        
+        # Find all player entries - pattern: <a>name</a> then <td>team</td> then <td>value</td>
+        import re
+        pattern = r'<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*>([^<]*)</td>\s*<td[^>]*>([\d.]+)</td>'
+        matches = re.findall(pattern, section, re.IGNORECASE)
+        
+        for i, match in enumerate(matches[:10]):  # Top 10
+            players.append({
+                "name": match[0].strip(),
+                "team": match[1].strip(),
+                "value": match[2].strip()
+            })
+        
+        if players:
+            result.append({
+                "name": cat["name"],
+                "abbr": cat["abbr"],
+                "players": players
+            })
+    
+    return result
+
+
+def fetch_leaders_from_genius():
+    """
+    Fetch leaders data from Genius Sports
+    """
+    try:
+        headers_req = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        
+        response = requests.get(TARGET_URL_LEADERS, headers=headers_req, timeout=30)
+        response.raise_for_status()
+        
+        html_content = parse_json_response(response.text)
+        return html_content, None
+        
+    except requests.exceptions.RequestException as e:
+        return None, str(e)
+
+
 def fetch_from_genius():
     """
     Fetch data from Genius Sports
@@ -473,6 +560,63 @@ def set_url():
         return jsonify({'success': False, 'error': 'No URL provided'})
     
     return jsonify({'url': TARGET_URL})
+
+
+@app.route('/leaders')
+def get_leaders():
+    """Return leaders data as JSON - auto-refreshes if older than 60 seconds"""
+    
+    AUTO_REFRESH_SECONDS = 60
+    
+    fetched_at = cached_leaders.get('fetched_at')
+    if fetched_at:
+        try:
+            last_fetch = datetime.fromisoformat(fetched_at)
+            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
+                html_content, error = fetch_leaders_from_genius()
+                if not error:
+                    categories = extract_leaders_data(html_content)
+                    cached_leaders['categories'] = categories
+                    cached_leaders['fetched_at'] = datetime.now().isoformat()
+                    cached_leaders['status'] = 'success'
+        except:
+            pass
+    
+    if not cached_leaders.get('categories'):
+        html_content, error = fetch_leaders_from_genius()
+        if not error:
+            categories = extract_leaders_data(html_content)
+            cached_leaders['categories'] = categories
+            cached_leaders['fetched_at'] = datetime.now().isoformat()
+            cached_leaders['status'] = 'success'
+    
+    return jsonify({
+        'categories': cached_leaders.get('categories', []),
+        'fetched_at': cached_leaders.get('fetched_at'),
+        'category_count': len(cached_leaders.get('categories', []))
+    })
+
+
+@app.route('/fetch_leaders')
+def fetch_leaders():
+    """Trigger leaders data fetch"""
+    html_content, error = fetch_leaders_from_genius()
+    
+    if error:
+        cached_leaders['status'] = 'error'
+        return jsonify({'success': False, 'error': error})
+    
+    categories = extract_leaders_data(html_content)
+    
+    cached_leaders['categories'] = categories
+    cached_leaders['fetched_at'] = datetime.now().isoformat()
+    cached_leaders['status'] = 'success'
+    
+    return jsonify({
+        'success': True,
+        'categories_found': len(categories),
+        'fetched_at': cached_leaders['fetched_at']
+    })
 
 
 if __name__ == '__main__':
