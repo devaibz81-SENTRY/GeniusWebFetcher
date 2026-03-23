@@ -1,639 +1,494 @@
 """
-NEBL Fetch Server
-Flask app to fetch player statistics from Genius Sports
+NEBL GLOBAL STATS SERVER
+Flask server - serves all data with proper parsing
+Endpoints: /leaders, /standings, /rankings, /schedule, /team-stats, /players
 """
-from flask import Flask, jsonify, request, render_template_string
+
+from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
-import json
+import re
 import os
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# Default target URLs - Using JSON API endpoint for player statistics
 GENIUS_EMBED_BASE = "https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en"
-TARGET_URL_PLAYER = f"{GENIUS_EMBED_BASE}/statistics/player?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
-TARGET_URL_TEAM = f"{GENIUS_EMBED_BASE}/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
-TARGET_URL_STANDINGS = f"{GENIUS_EMBED_BASE}/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+GENIUS_WEB_BASE = "https://nebl.web.geniussports.com"
 
-# Default target URL for compatibility
-TARGET_URL = TARGET_URL_PLAYER
-
-# Cache for fetched data
-cached_data = {
-    "headers": [],
-    "data": [],
-    "fetched_at": None,
-    "status": "empty"
+URLS = {
+    'leaders': f"{GENIUS_EMBED_BASE}/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1",
+    'player': f"{GENIUS_EMBED_BASE}/statistics/player?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1",
+    'standings': f"{GENIUS_EMBED_BASE}/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1",
+    'team': f"{GENIUS_EMBED_BASE}/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1",
+    'schedule': f"{GENIUS_EMBED_BASE}/schedule?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fschedule&_cc=1&_lc=1&_nv=1&_mf=1",
 }
 
-# Leaders cache
-cached_leaders = {
-    "categories": [],
-    "fetched_at": None,
-    "status": "empty"
+TEAM_MAP = {
+    "Orange Walk Running Rebels": "OWR",
+    "San Pedro Tiger Sharks": "SPT",
+    "Cayo Western Ballaz": "CWB",
+    "Belize City Defenders": "DEF",
+    "Belmopan Trojans": "BMP",
+    "Griga Dream Ballers": "DDB",
+    "EZ Investment Griga Dream Ballers": "DDB",
+    "Corozal Spartans": "COR"
 }
 
-# Global Leaders URL - from nebl.web.geniussports.com
-TARGET_URL_LEADERS = f"{GENIUS_EMBED_BASE}/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
-TARGET_URL_GLOBAL_LEADERS = "https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
+CATEGORIES = [
+    {"name": "Efficiency", "abbr": "EFF"},
+    {"name": "Average points", "abbr": "PPG"},
+    {"name": "Average assists", "abbr": "APG"},
+    {"name": "Average total rebounds", "abbr": "RPG"},
+    {"name": "Average defensive rebounds", "abbr": "DRPG"},
+    {"name": "Average offensive rebounds", "abbr": "ORPG"},
+    {"name": "Average blocks", "abbr": "BLKPG"},
+    {"name": "Average steals", "abbr": "STPG"},
+    {"name": "Average fouls on", "abbr": "FOPG"},
+    {"name": "Field goal percentage", "abbr": "FG%"},
+    {"name": "3 Points made", "abbr": "3PM"},
+    {"name": "3 Point percentage", "abbr": "3P%"},
+    {"name": "2 Points percentage", "abbr": "2P%"},
+    {"name": "Free throw percentage", "abbr": "FT%"},
+    {"name": "Average minutes", "abbr": "MPG"},
+]
 
-# HTML Template for the interface
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEBL Fetch Server</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #043f8f 0%, #1a1a2e 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #fff;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        .subtitle {
-            text-align: center;
-            color: #90caf9;
-            margin-bottom: 30px;
-        }
-        .card {
-            background: rgba(255,255,255,0.1);
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-            backdrop-filter: blur(10px);
-        }
-        .card h2 {
-            margin-bottom: 15px;
-            color: #90caf9;
-            border-bottom: 2px solid #90caf9;
-            padding-bottom: 10px;
-        }
-        .status-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .status-item {
-            background: rgba(0,0,0,0.3);
-            padding: 10px 20px;
-            border-radius: 25px;
-        }
-        .status-online { color: #4caf50; }
-        .status-error { color: #f44336; }
-        .status-pending { color: #ff9800; }
-        .btn {
-            background: #043f8f;
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 25px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: all 0.3s ease;
-            display: inline-block;
-            text-decoration: none;
-        }
-        .btn:hover {
-            background: #0656b0;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-        }
-        .btn-fetch {
-            background: #4caf50;
-        }
-        .btn-fetch:hover {
-            background: #5cbf60;
-        }
-        .btn-clear {
-            background: #f44336;
-        }
-        .btn-clear:hover {
-            background: #e53935;
-        }
-        .btn-group {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 15px;
-        }
-        .url-display {
-            background: rgba(0,0,0,0.3);
-            padding: 15px;
-            border-radius: 10px;
-            word-break: break-all;
-            font-family: monospace;
-            font-size: 12px;
-            margin-top: 10px;
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }
-        .stat-box {
-            background: rgba(0,0,0,0.3);
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-        }
-        .stat-number {
-            font-size: 2em;
-            font-weight: bold;
-            color: #90caf9;
-        }
-        .stat-label {
-            color: #ccc;
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-        .endpoint-list {
-            background: rgba(0,0,0,0.3);
-            padding: 15px;
-            border-radius: 10px;
-            font-family: monospace;
-        }
-        .endpoint-list a {
-            color: #90caf9;
-            display: block;
-            padding: 5px 0;
-        }
-        .error-msg {
-            background: rgba(244, 67, 54, 0.2);
-            border: 1px solid #f44336;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 15px;
-        }
-        .success-msg {
-            background: rgba(76, 175, 80, 0.2);
-            border: 1px solid #4caf50;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 15px;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            color: #666;
-            font-size: 12px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🏀 NEBL Fetch Server</h1>
-        <p class="subtitle">Player Statistics Extractor</p>
-        
-        <div class="card">
-            <div class="status-bar">
-                <div class="status-item">
-                    <strong>Status:</strong> 
-                    <span class="status-{{ 'online' if has_data else 'pending' }}">
-                        {{ 'Data Loaded' if has_data else 'No Data' }}
-                    </span>
-                </div>
-                <div class="status-item">
-                    <strong>Last Fetch:</strong> {{ last_fetch or 'Never' }}
-                </div>
-            </div>
-            
-            <h2>Target URL</h2>
-            <div class="url-display">{{ target_url }}</div>
-            
-            <div class="btn-group">
-                <button class="btn btn-fetch" onclick="fetchData()">🔄 Fetch Data</button>
-                <button class="btn btn-clear" onclick="clearData()">🗑️ Clear</button>
-            </div>
-            
-            {% if message %}
-                <div class="{{ 'success-msg' if 'success' in message else 'error-msg' }}">
-                    {{ message }}
-                </div>
-            {% endif %}
-        </div>
-        
-        {% if has_data %}
-        <div class="card">
-            <h2>📊 Statistics</h2>
-            <div class="stats">
-                <div class="stat-box">
-                    <div class="stat-number">{{ player_count }}</div>
-                    <div class="stat-label">Players</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-number">{{ column_count }}</div>
-                    <div class="stat-label">Columns</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-number">{{ data_size }}</div>
-                    <div class="stat-label">KB</div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        
-        <div class="card">
-            <h2>🔗 API Endpoints</h2>
-            <div class="endpoint-list">
-                <a href="/data" target="_blank">GET /data - JSON Data</a>
-                <a href="/fetch" target="_blank">GET /fetch - Trigger Fetch</a>
-                <a href="/health" target="_blank">GET /health - Health Check</a>
-                <a href="/" target="_blank">GET / - This Page</a>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>📝 Instructions</h2>
-            <ol style="line-height: 1.8; padding-left: 20px;">
-                <li>Click <strong>Fetch Data</strong> to retrieve player statistics</li>
-                <li>View JSON data at <strong>/data</strong> endpoint</li>
-                <li>Use <strong>/data</strong> URL in Google Sheets Apps Script</li>
-                <li>For external access, deploy to Render.com</li>
-            </ol>
-        </div>
-        
-        <div class="footer">
-            NEBL Fetch Server | Genius Sports Data Extractor
-        </div>
-    </div>
-    
-    <script>
-        function fetchData() {
-            fetch('/fetch')
-                .then(r => r.json())
-                .then(d => {
-                    if (d.success) {
-                        location.reload();
-                    } else {
-                        alert('Error: ' + (d.error || 'Unknown error'));
-                    }
-                })
-                .catch(e => alert('Fetch failed: ' + e));
-        }
-        
-        function clearData() {
-            if (confirm('Clear cached data?')) {
-                fetch('/clear', {method: 'POST'})
-                    .then(r => r.json())
-                    .then(d => location.reload());
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-def extract_player_stats(html_content):
-    """
-    Extract player statistics table from HTML
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    players_data = []
-    headers = []
-    
-    tables = soup.find_all('table')
-    
-    for table in tables:
-        rows = table.find_all('tr')
-        for i, row in enumerate(rows):
-            cells = row.find_all(['td', 'th'])
-            if cells:
-                row_data = []
-                for cell in cells:
-                    text = cell.get_text(strip=True)
-                    row_data.append(text)
-                
-                if i == 0:
-                    headers = row_data
-                else:
-                    if row_data:
-                        players_data.append(row_data)
-    
-    return headers, players_data
+cache = {k: {'data': None, 'fetched_at': None} for k in URLS}
+game_cache = {}
+FIBALIVE = "https://fibalivestats.dcd.shared.geniussports.com/data"
 
 
-def parse_json_response(response_text):
-    """
-    Parse the JSON response from Genius Sports embed endpoint
-    The response is JSON with an 'html' field containing escaped HTML
-    """
+def fetch_html(url):
     try:
-        data = json.loads(response_text)
-        return data.get('html', '')
-    except json.JSONDecodeError:
-        return response_text
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        print(f"Fetch error: {e}")
+        return ""
 
 
-def extract_leaders_data(html_content):
-    """
-    Extract leaders data from HTML
-    Returns list of categories with top 10 players each
-    """
-    import re
+def parse_leaders(html):
+    """Parse all 15 leader categories"""
+    categories = []
     
-    categories = [
-        {"name": "Efficiency", "search": "EfficiencyCustom", "abbr": "EFF"},
-        {"name": "Average Points", "search": "Average points", "abbr": "PPG"},
-        {"name": "Average Assists", "search": "Average assists", "abbr": "APG"},
-        {"name": "Average Rebounds", "search": "Average total rebounds", "abbr": "RPG"},
-        {"name": "Field Goal %", "search": "Field goal percentage", "abbr": "FG%"},
-        {"name": "3-Point %", "search": "3 Point percentage", "abbr": "3P%"},
-        {"name": "Free Throw %", "search": "Free throw percentage", "abbr": "FT%"},
-        {"name": "Average Minutes", "search": "Average minutes", "abbr": "MPG"},
-    ]
-    
-    result = []
-    
-    for cat in categories:
-        search_term = cat["search"]
-        cat_index = html_content.find(search_term)
-        
-        if cat_index == -1:
+    for cat in CATEGORIES:
+        idx = html.find(cat['name'])
+        if idx == -1:
+            idx = html.find(cat['abbr'])
+        if idx == -1:
             continue
         
-        section_start = cat_index
-        section_end = cat_index + 10000
-        section = html_content[section_start:section_end]
-        
+        section = html[idx:idx+25000]
         players = []
         
-        # Find table rows with player data
-        # Pattern: Player in <a href="/person/...">, Team in <td class="team"><a href="/team/...">, Value in <td>
-        rows = re.findall(
-            r'<a href="[^"]*person[^"]*">([^<]+)</a>\s*</td>\s*<td[^>]*class="team"[^>]*>\s*<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*>([\d.]+)</td>',
-            section,
-            re.IGNORECASE
-        )
+        lines = section.split('\n')
+        current = {'name': '', 'team': '', 'value': ''}
         
-        for i, row in enumerate(rows[:10]):
-            name = row[0].strip()
-            team = row[1].strip()
-            value = row[2].strip()
+        for line in lines:
+            clean = re.sub(r'<[^>]+>', '', line).strip()
             
-            players.append({
-                "name": name,
-                "team": team,
-                "value": value
-            })
+            for team_name, abbr in TEAM_MAP.items():
+                if team_name in line:
+                    if current.get('name') and current.get('value'):
+                        players.append(current)
+                    current = {'name': '', 'team': team_name, 'abbr': abbr, 'value': ''}
+                    break
+            
+            val_match = re.match(r'^(\d+\.?\d*)\s*$', clean)
+            if val_match and current.get('name') and not current.get('value'):
+                current['value'] = val_match.group(1)
+                players.append(current)
+                current = {'name': '', 'team': '', 'value': ''}
+            elif len(clean) > 2 and len(clean) < 40 and clean[0].isupper():
+                if not val_match and not clean.startswith('ld-') and not clean.startswith('class='):
+                    current['name'] = clean
         
-        if players:
-            result.append({
-                "name": cat["name"],
-                "abbr": cat["abbr"],
-                "players": players
+        if players and len(categories) < 16:
+            categories.append({'name': cat['name'], 'abbr': cat['abbr'], 'players': players[:10]})
+    
+    return categories
+
+
+def parse_standings(html):
+    """Parse standings table"""
+    soup = BeautifulSoup(html, 'html.parser')
+    rows = soup.find_all('tr')
+    standings = []
+    
+    for row in rows:
+        cells = row.find_all(['td', 'th'])
+        if len(cells) >= 6:
+            team_link = row.find('a', href=lambda h: h and '/team/' in h)
+            if team_link:
+                team_name = team_link.get_text(strip=True)
+                standings.append({
+                    'rank': cells[0].get_text(strip=True) if cells else '',
+                    'team': team_name,
+                    'abbr': TEAM_MAP.get(team_name, ''),
+                    'gp': cells[1].get_text(strip=True) if len(cells) > 1 else '',
+                    'w': cells[2].get_text(strip=True) if len(cells) > 2 else '',
+                    'l': cells[3].get_text(strip=True) if len(cells) > 3 else '',
+                    'pct': cells[4].get_text(strip=True) if len(cells) > 4 else '',
+                    'diff': cells[5].get_text(strip=True) if len(cells) > 5 else '',
+                })
+    
+    return standings
+
+
+def parse_rankings(html):
+    """Parse player rankings"""
+    soup = BeautifulSoup(html, 'html.parser')
+    rows = soup.find_all('tr')
+    rankings = []
+    
+    for row in rows:
+        cells = row.find_all('td')
+        if len(cells) >= 6:
+            team = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+            rankings.append({
+                'rank': cells[0].get_text(strip=True),
+                'player': cells[1].get_text(strip=True),
+                'team': team,
+                'abbr': next((v for k, v in TEAM_MAP.items() if k in team), ''),
+                'gp': cells[3].get_text(strip=True) if len(cells) > 3 else '',
+                'min': cells[4].get_text(strip=True) if len(cells) > 4 else '',
+                'pts': cells[5].get_text(strip=True) if len(cells) > 5 else '',
+                'reb': cells[6].get_text(strip=True) if len(cells) > 6 else '',
+                'ast': cells[7].get_text(strip=True) if len(cells) > 7 else '',
             })
     
-    return result
+    return rankings
 
 
-def fetch_leaders_from_genius():
-    """
-    Fetch leaders data from Genius Sports
-    """
-    try:
-        headers_req = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
-        
-        response = requests.get(TARGET_URL_LEADERS, headers=headers_req, timeout=30)
-        response.raise_for_status()
-        
-        html_content = parse_json_response(response.text)
-        return html_content, None
-        
-    except requests.exceptions.RequestException as e:
-        return None, str(e)
+def parse_schedule(html):
+    """Parse schedule - games with date, teams, scores"""
+    soup = BeautifulSoup(html, 'html.parser')
+    games = []
+    
+    items = soup.find_all(['tr', 'div'], class_=re.compile(r'game|match|schedule|event'))
+    
+    for item in items:
+        teams = item.find_all('a', href=lambda h: h and '/team/' in h)
+        if len(teams) >= 2:
+            home = teams[0].get_text(strip=True)
+            away = teams[1].get_text(strip=True)
+            
+            scores = re.findall(r'\d+\s*-\s*\d+', item.get_text())
+            
+            game = {
+                'date': item.find(class_=re.compile(r'date|time')).get_text(strip=True) if item.find(class_=re.compile(r'date|time')) else '',
+                'home': home,
+                'away': away,
+                'home_abbr': TEAM_MAP.get(home, ''),
+                'away_abbr': TEAM_MAP.get(away, ''),
+            }
+            
+            if scores:
+                parts = re.split(r'\s*-\s*', scores[0])
+                if len(parts) == 2:
+                    game['home_score'] = parts[0].strip()
+                    game['away_score'] = parts[1].strip()
+                    game['status'] = 'COMPLETED'
+                else:
+                    game['status'] = 'SCHEDULED'
+            else:
+                game['status'] = 'SCHEDULED'
+            
+            games.append(game)
+    
+    return games
 
 
-def fetch_from_genius():
-    """
-    Fetch data from Genius Sports
-    """
-    try:
-        headers_req = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
-        
-        response = requests.get(TARGET_URL, headers=headers_req, timeout=30)
-        response.raise_for_status()
-        
-        html_content = parse_json_response(response.text)
-        return html_content, None
-        
-    except requests.exceptions.RequestException as e:
-        return None, str(e)
+def parse_team_stats(html):
+    """Parse team statistics"""
+    soup = BeautifulSoup(html, 'html.parser')
+    rows = soup.find_all('tr')
+    teams = []
+    
+    for row in rows:
+        cells = row.find_all('td')
+        if len(cells) >= 12:
+            team_link = row.find('a', href=lambda h: h and '/team/' in h)
+            if team_link:
+                team_name = team_link.get_text(strip=True)
+                teams.append({
+                    'name': team_name,
+                    'abbr': TEAM_MAP.get(team_name, ''),
+                    'gp': cells[0].get_text(strip=True),
+                    'pts': cells[1].get_text(strip=True),
+                    'fgm': cells[2].get_text(strip=True),
+                    'fga': cells[3].get_text(strip=True),
+                    'fgp': cells[4].get_text(strip=True),
+                    'tpm': cells[5].get_text(strip=True),
+                    'tpa': cells[6].get_text(strip=True),
+                    'tpp': cells[7].get_text(strip=True),
+                    'ftm': cells[8].get_text(strip=True),
+                    'fta': cells[9].get_text(strip=True),
+                    'ftp': cells[10].get_text(strip=True),
+                    'reb': cells[11].get_text(strip=True),
+                    'ast': cells[12].get_text(strip=True) if len(cells) > 12 else '',
+                })
+    
+    return teams
 
+
+# ==================== ROUTES ====================
 
 @app.route('/')
 def index():
-    """Main page"""
-    has_data = bool(cached_data.get('data'))
-    last_fetch = cached_data.get('fetched_at', 'Never')
-    
-    player_count = len(cached_data.get('data', []))
-    column_count = len(cached_data.get('headers', []))
-    data_size = 0
-    if cached_data.get('data'):
-        data_size = len(json.dumps(cached_data)) // 1024
-    
-    return render_template_string(
-        HTML_TEMPLATE,
-        target_url=TARGET_URL,
-        has_data=has_data,
-        last_fetch=last_fetch,
-        player_count=player_count,
-        column_count=column_count,
-        data_size=data_size,
-        message=request.args.get('message', '')
-    )
-
-
-@app.route('/fetch')
-def fetch():
-    """Trigger data fetch"""
-    html_content, error = fetch_from_genius()
-    
-    if error:
-        cached_data['status'] = 'error'
-        return jsonify({'success': False, 'error': error})
-    
-    headers, data = extract_player_stats(html_content)
-    
-    cached_data['headers'] = headers
-    cached_data['data'] = data
-    cached_data['fetched_at'] = datetime.now().isoformat()
-    cached_data['status'] = 'success'
-    
     return jsonify({
-        'success': True,
-        'players_found': len(data),
-        'columns': len(headers),
-        'fetched_at': cached_data['fetched_at']
-    })
-
-
-@app.route('/data')
-def get_data():
-    """Return cached data as JSON - auto-refreshes if older than 60 seconds"""
-    
-    AUTO_REFRESH_SECONDS = 60
-    
-    fetched_at = cached_data.get('fetched_at')
-    if fetched_at:
-        try:
-            last_fetch = datetime.fromisoformat(fetched_at)
-            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
-                html_content, error = fetch_from_genius()
-                if not error:
-                    headers, data = extract_player_stats(html_content)
-                    cached_data['headers'] = headers
-                    cached_data['data'] = data
-                    cached_data['fetched_at'] = datetime.now().isoformat()
-                    cached_data['status'] = 'success'
-        except:
-            pass
-    
-    if not cached_data.get('data'):
-        return jsonify({
-            'error': 'No data available. Call /fetch first.',
-            'headers': [],
-            'data': []
-        }), 404
-    
-    return jsonify({
-        'headers': cached_data['headers'],
-        'data': cached_data['data'],
-        'fetched_at': cached_data['fetched_at'],
-        'player_count': len(cached_data['data'])
-    })
-
-
-@app.route('/clear', methods=['POST'])
-def clear():
-    """Clear cached data"""
-    cached_data['headers'] = []
-    cached_data['data'] = []
-    cached_data['fetched_at'] = None
-    cached_data['status'] = 'empty'
-    return jsonify({'success': True})
-
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({
+        'name': 'NEBL Global Server',
         'status': 'online',
-        'has_data': bool(cached_data.get('data')),
-        'player_count': len(cached_data.get('data', [])),
-        'fetched_at': cached_data.get('fetched_at')
+        'endpoints': [
+            '/leaders - All 15 categories',
+            '/standings - League standings',
+            '/rankings - Player rankings',
+            '/schedule - Game schedule',
+            '/team-stats - Team statistics',
+            '/live/<game_id> - Live game',
+            '/health - Status',
+            '/refresh - Force refresh'
+        ]
     })
-
-
-@app.route('/url', methods=['GET', 'POST'])
-def set_url():
-    """Get or set target URL"""
-    global TARGET_URL
-    
-    if request.method == 'POST':
-        new_url = request.form.get('url', '')
-        if new_url:
-            TARGET_URL = new_url
-            return jsonify({'success': True, 'url': TARGET_URL})
-        return jsonify({'success': False, 'error': 'No URL provided'})
-    
-    return jsonify({'url': TARGET_URL})
 
 
 @app.route('/leaders')
 def get_leaders():
-    """Return leaders data as JSON - auto-refreshes if older than 60 seconds"""
-    
-    AUTO_REFRESH_SECONDS = 60
-    
-    fetched_at = cached_leaders.get('fetched_at')
-    if fetched_at:
-        try:
-            last_fetch = datetime.fromisoformat(fetched_at)
-            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
-                html_content, error = fetch_leaders_from_genius()
-                if not error:
-                    categories = extract_leaders_data(html_content)
-                    cached_leaders['categories'] = categories
-                    cached_leaders['fetched_at'] = datetime.now().isoformat()
-                    cached_leaders['status'] = 'success'
-        except:
-            pass
-    
-    if not cached_leaders.get('categories'):
-        html_content, error = fetch_leaders_from_genius()
-        if not error:
-            categories = extract_leaders_data(html_content)
-            cached_leaders['categories'] = categories
-            cached_leaders['fetched_at'] = datetime.now().isoformat()
-            cached_leaders['status'] = 'success'
-    
+    if not cache['leaders']['data']:
+        html = fetch_html(URLS['leaders'])
+        cache['leaders']['data'] = parse_leaders(html)
+        cache['leaders']['fetched_at'] = datetime.now().isoformat()
     return jsonify({
-        'categories': cached_leaders.get('categories', []),
-        'fetched_at': cached_leaders.get('fetched_at'),
-        'category_count': len(cached_leaders.get('categories', []))
+        'categories': cache['leaders']['data'],
+        'count': len(cache['leaders']['data']),
+        'fetched_at': cache['leaders']['fetched_at']
     })
 
 
-@app.route('/fetch_leaders')
-def fetch_leaders():
-    """Trigger leaders data fetch"""
-    html_content, error = fetch_leaders_from_genius()
+@app.route('/standings')
+def get_standings():
+    if not cache['standings']['data']:
+        html = fetch_html(URLS['standings'])
+        cache['standings']['data'] = parse_standings(html)
+        cache['standings']['fetched_at'] = datetime.now().isoformat()
+    return jsonify({
+        'standings': cache['standings']['data'],
+        'count': len(cache['standings']['data']),
+        'fetched_at': cache['standings']['fetched_at']
+    })
+
+
+@app.route('/rankings')
+def get_rankings():
+    if not cache['rankings']['data']:
+        html = fetch_html(URLS['player'])
+        cache['rankings']['data'] = parse_rankings(html)
+        cache['rankings']['fetched_at'] = datetime.now().isoformat()
+    return jsonify({
+        'rankings': cache['rankings']['data'],
+        'count': len(cache['rankings']['data']),
+        'fetched_at': cache['rankings']['fetched_at']
+    })
+
+
+@app.route('/schedule')
+def get_schedule():
+    if not cache['schedule']['data']:
+        html = fetch_html(URLS['schedule'])
+        cache['schedule']['data'] = parse_schedule(html)
+        cache['schedule']['fetched_at'] = datetime.now().isoformat()
+    return jsonify({
+        'schedule': cache['schedule']['data'],
+        'count': len(cache['schedule']['data']),
+        'fetched_at': cache['schedule']['fetched_at']
+    })
+
+
+@app.route('/team-stats')
+def get_team_stats():
+    if not cache['team_stats']['data']:
+        html = fetch_html(URLS['team'])
+        cache['team_stats']['data'] = parse_team_stats(html)
+        cache['team_stats']['fetched_at'] = datetime.now().isoformat()
+    return jsonify({
+        'teams': cache['team_stats']['data'],
+        'count': len(cache['team_stats']['data']),
+        'fetched_at': cache['team_stats']['fetched_at']
+    })
+
+
+@app.route('/refresh')
+def refresh():
+    for k in cache:
+        cache[k] = {'data': None, 'fetched_at': None}
+    return jsonify({'status': 'refreshed'})
+
+
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'online',
+        'cache': {k: bool(v['data']) for k, v in cache.items()},
+        'games': len(game_cache),
+        'time': datetime.now().isoformat()
+    })
+
+
+# ==================== LIVE GAME ====================
+
+def fetch_game(game_id):
+    try:
+        resp = requests.get(f"{FIBALIVE}/{game_id}/data.json", timeout=30)
+        return resp.json()
+    except:
+        return None
+
+
+@app.route('/live/<game_id>')
+def live_game(game_id):
+    data = fetch_game(game_id)
+    if not data:
+        return jsonify({'error': 'Game not found'}), 404
+    return jsonify({'game_id': game_id, 'data': data})
+
+
+@app.route('/live/<game_id>/team')
+def live_team(game_id):
+    data = fetch_game(game_id)
+    if not data:
+        return jsonify({'error': 'Game not found'}), 404
     
-    if error:
-        cached_leaders['status'] = 'error'
-        return jsonify({'success': False, 'error': error})
-    
-    categories = extract_leaders_data(html_content)
-    
-    cached_leaders['categories'] = categories
-    cached_leaders['fetched_at'] = datetime.now().isoformat()
-    cached_leaders['status'] = 'success'
+    teams = []
+    for tid, t in data.get('tm', {}).items():
+        teams.append({
+            'id': tid,
+            'name': t.get('name', ''),
+            'code': t.get('code', ''),
+            'score': t.get('score', 0),
+            'fgm': t.get('tot_sFieldGoalsMade', 0),
+            'fga': t.get('tot_sFieldGoalsAttempted', 0),
+            'fgp': t.get('tot_sFieldGoalsPercentage', 0),
+            'tpm': t.get('tot_sThreePointersMade', 0),
+            'tpa': t.get('tot_sThreePointersAttempted', 0),
+            'tpp': t.get('tot_sThreePointersPercentage', 0),
+            'ftm': t.get('tot_sFreeThrowsMade', 0),
+            'fta': t.get('tot_sFreeThrowsAttempted', 0),
+            'reb': t.get('tot_sReboundsTotal', 0),
+            'oreb': t.get('tot_sReboundsOffensive', 0),
+            'dreb': t.get('tot_sReboundsDefensive', 0),
+            'ast': t.get('tot_sAssists', 0),
+            'stl': t.get('tot_sSteals', 0),
+            'blk': t.get('tot_sBlocks', 0),
+            'to': t.get('tot_sTurnovers', 0),
+            'pf': t.get('tot_sFoulsPersonal', 0),
+        })
     
     return jsonify({
-        'success': True,
-        'categories_found': len(categories),
-        'fetched_at': cached_leaders['fetched_at']
+        'game_id': game_id,
+        'clock': data.get('clock', ''),
+        'period': data.get('period', 0),
+        'teams': teams
+    })
+
+
+@app.route('/live/<game_id>/home')
+def live_home(game_id):
+    return live_players(game_id, 0)
+
+
+@app.route('/live/<game_id>/away')
+def live_away(game_id):
+    return live_players(game_id, 1)
+
+
+def live_players(game_id, pos):
+    data = fetch_game(game_id)
+    if not data:
+        return jsonify({'error': 'Game not found'}), 404
+    
+    team_ids = list(data.get('tm', {}).keys())
+    if len(team_ids) < 2:
+        return jsonify({'error': 'Invalid game'}), 400
+    
+    target_id = team_ids[pos]
+    team_info = data['tm'][target_id]
+    
+    players = []
+    for pid, p in data.get('pl', {}).items():
+        if p.get('ti') == target_id:
+            players.append({
+                'id': pid,
+                'firstName': p.get('firstName', '') or p.get('fn', ''),
+                'lastName': p.get('familyName', '') or p.get('ln', ''),
+                'name': f"{p.get('firstName', '') or p.get('fn', '')} {p.get('familyName', '') or p.get('ln', '')}".strip(),
+                'no': p.get('pno', '') or p.get('no', ''),
+                'pos': p.get('pos', ''),
+                'min': p.get('min', '0:00'),
+                'pts': p.get('pts', 0),
+                'reb': p.get('reb', 0),
+                'ass': p.get('ass', 0),
+                'stl': p.get('stl', 0),
+                'blk': p.get('blk', 0),
+                'fgm': p.get('fgm', 0),
+                'fga': p.get('fga', 0),
+                'tpm': p.get('tpm', 0),
+                'tpa': p.get('tpa', 0),
+                'ftm': p.get('ftm', 0),
+                'fta': p.get('fta', 0),
+                'oreb': p.get('oreb', 0),
+                'dreb': p.get('dreb', 0),
+                'to': p.get('to', 0),
+                'f': p.get('f', 0),
+                'starter': p.get('E', 'N')
+            })
+    
+    players.sort(key=lambda x: int(x['pts']) if x['pts'] else 0, reverse=True)
+    
+    return jsonify({
+        'game_id': game_id,
+        'team': {'id': target_id, 'name': team_info.get('name', ''), 'code': team_info.get('code', ''), 'score': team_info.get('score', 0)},
+        'players': players
+    })
+
+
+@app.route('/live/<game_id>/leaders')
+def live_leaders(game_id):
+    data = fetch_game(game_id)
+    if not data:
+        return jsonify({'error': 'Game not found'}), 404
+    
+    players = []
+    for pid, p in data.get('pl', {}).items():
+        tinfo = data['tm'].get(p.get('ti', ''), {})
+        players.append({
+            'id': pid,
+            'name': f"{p.get('firstName', '') or p.get('fn', '')} {p.get('familyName', '') or p.get('ln', '')}".strip(),
+            'team': tinfo.get('shortName', ''),
+            'code': tinfo.get('code', ''),
+            'pts': p.get('pts', 0),
+            'reb': p.get('reb', 0),
+            'ass': p.get('ass', 0),
+            'stl': p.get('stl', 0),
+            'blk': p.get('blk', 0)
+        })
+    
+    return jsonify({
+        'game_id': game_id,
+        'clock': data.get('clock', ''),
+        'period': data.get('period', 0),
+        'leaders': {
+            'pts': sorted(players, key=lambda x: int(x['pts']) if x['pts'] else 0, reverse=True)[:5],
+            'reb': sorted(players, key=lambda x: int(x['reb']) if x['reb'] else 0, reverse=True)[:5],
+            'ass': sorted(players, key=lambda x: int(x['ass']) if x['ass'] else 0, reverse=True)[:5],
+            'stl': sorted(players, key=lambda x: int(x['stl']) if x['stl'] else 0, reverse=True)[:5],
+            'blk': sorted(players, key=lambda x: int(x['blk']) if x['blk'] else 0, reverse=True)[:5],
+        }
     })
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print("=" * 50)
-    print("  NEBL Fetch Server")
-    print("=" * 50)
-    print(f"  Local URL: http://localhost:{port}")
-    print(f"  Target: {TARGET_URL}")
-    print("=" * 50)
-    print("  Press CTRL+C to stop")
-    print("=" * 50)
-    app.run(host='0.0.0.0', port=port, debug=True)
+    print("NEBL Stats Server starting...")
+    print("Endpoints: /leaders, /standings, /rankings, /schedule, /team-stats")
+    print("Live: /live/<game_id>/team|home|away|leaders")
+    app.run(host='0.0.0.0', port=5001, debug=True)
