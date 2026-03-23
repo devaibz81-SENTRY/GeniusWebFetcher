@@ -782,7 +782,7 @@ TEAM_MAP = {
 
 @app.route('/standings')
 def get_standings():
-    """Return standings data"""
+    """Return standings data - Parse HTML with table.standings structure"""
     url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
@@ -791,27 +791,54 @@ def get_standings():
         soup = BeautifulSoup(html, 'html.parser')
         standings = []
         
-        for row in soup.find_all('tr'):
-            cells = row.find_all('td')
-            row_class = ' '.join(row.get('class', []))
-            if len(cells) >= 11 and 'standings_team' in row_class:
-                team_link = row.find('a', href=lambda h: h and '/team/' in h)
-                if team_link:
-                    span = team_link.find('span', class_='team-name-full')
-                    team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
-                    standings.append({
-                        'rank': cells[0].get_text(strip=True),
-                        'team': team_name,
-                        'abbr': TEAM_MAP.get(team_name, ''),
-                        'pts': cells[3].get_text(strip=True),
-                        'w': cells[4].get_text(strip=True),
-                        'l': cells[5].get_text(strip=True),
-                        'gp': cells[6].get_text(strip=True),
-                        'streak': cells[7].get_text(strip=True),
-                        'for': cells[8].get_text(strip=True),
-                        'against': cells[9].get_text(strip=True),
-                        'diff': cells[10].get_text(strip=True)
-                    })
+        # Find the standings table
+        table = soup.find('table', class_='standings')
+        if not table:
+            # Try finding any table with standings in class
+            table = soup.find('table', class_=lambda x: x and 'standings' in x)
+        
+        if table:
+            for row in table.find_all('tr'):
+                row_class = ' '.join(row.get('class', []))
+                # Check if this is a team row (class contains standings_team)
+                if 'standings_team' in row_class:
+                    cells = row.find_all('td')
+                    if len(cells) >= 11:
+                        # Get team name from span.team-name-full
+                        team_cell = row.find('td', class_='team-name')
+                        team_name = ''
+                        team_code = ''
+                        if team_cell:
+                            span_full = team_cell.find('span', class_='team-name-full')
+                            span_code = team_cell.find('span', class_='team-name-code')
+                            team_name = span_full.get_text(strip=True) if span_full else ''
+                            team_code = span_code.get_text(strip=True) if span_code else ''
+                        
+                        if not team_name:
+                            team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
+                            if team_link:
+                                span = team_link.find('span', class_='team-name-full')
+                                team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
+                        
+                        # Extract team ID from class for mapping
+                        team_id_match = re.search(r'standings_team_(\d+)', row_class)
+                        team_id = team_id_match.group(1) if team_id_match else ''
+                        
+                        standings.append({
+                            'rank': cells[0].get_text(strip=True),
+                            'team': team_name,
+                            'code': team_code,
+                            'abbr': TEAM_MAP.get(team_name, team_code),
+                            'team_id': team_id,
+                            'pts': cells[3].get_text(strip=True) if len(cells) > 3 else '',
+                            'w': cells[4].get_text(strip=True) if len(cells) > 4 else '',
+                            'l': cells[5].get_text(strip=True) if len(cells) > 5 else '',
+                            'gp': cells[6].get_text(strip=True) if len(cells) > 6 else '',
+                            'streak': cells[7].get_text(strip=True) if len(cells) > 7 else '',
+                            'for': cells[8].get_text(strip=True) if len(cells) > 8 else '',
+                            'against': cells[9].get_text(strip=True) if len(cells) > 9 else '',
+                            'diff': cells[10].get_text(strip=True) if len(cells) > 10 else ''
+                        })
         
         # Cache the data
         all_data_cache['standings'] = {
@@ -941,6 +968,64 @@ def get_leaders():
         return jsonify({'categories': categories, 'count': len(categories)})
     except Exception as e:
         return jsonify({'error': str(e), 'categories': []})
+
+
+@app.route('/standings-direct')
+def get_standings_direct():
+    """Return standings data - Fetch directly from page URL (fallback)"""
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/standings"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        standings = []
+        
+        # Find the standings table
+        table = soup.find('table', class_='standings')
+        if not table:
+            table = soup.find('table', class_=lambda x: x and 'standings' in x if x else False)
+        
+        if table:
+            for row in table.find_all('tr'):
+                row_class = ' '.join(row.get('class', []))
+                if 'standings_team' in row_class:
+                    cells = row.find_all('td')
+                    if len(cells) >= 11:
+                        team_cell = row.find('td', class_='team-name')
+                        team_name = ''
+                        team_code = ''
+                        if team_cell:
+                            span_full = team_cell.find('span', class_='team-name-full')
+                            span_code = team_cell.find('span', class_='team-name-code')
+                            team_name = span_full.get_text(strip=True) if span_full else ''
+                            team_code = span_code.get_text(strip=True) if span_code else ''
+                        
+                        team_id_match = re.search(r'standings_team_(\d+)', row_class)
+                        team_id = team_id_match.group(1) if team_id_match else ''
+                        
+                        standings.append({
+                            'rank': cells[0].get_text(strip=True),
+                            'team': team_name,
+                            'code': team_code,
+                            'abbr': TEAM_MAP.get(team_name, team_code),
+                            'team_id': team_id,
+                            'pts': cells[3].get_text(strip=True) if len(cells) > 3 else '',
+                            'w': cells[4].get_text(strip=True) if len(cells) > 4 else '',
+                            'l': cells[5].get_text(strip=True) if len(cells) > 5 else '',
+                            'gp': cells[6].get_text(strip=True) if len(cells) > 6 else '',
+                            'streak': cells[7].get_text(strip=True) if len(cells) > 7 else '',
+                            'for': cells[8].get_text(strip=True) if len(cells) > 8 else '',
+                            'against': cells[9].get_text(strip=True) if len(cells) > 9 else '',
+                            'diff': cells[10].get_text(strip=True) if len(cells) > 10 else ''
+                        })
+        
+        return jsonify({
+            'standings': standings,
+            'count': len(standings),
+            'source': 'direct',
+            'fetched_at': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'standings': [], 'count': 0})
 
 
 @app.route('/schedule')
