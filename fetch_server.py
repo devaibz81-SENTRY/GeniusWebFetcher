@@ -500,10 +500,9 @@ def get_standings():
         soup = BeautifulSoup(html, 'html.parser')
         standings = []
         
-        # Find all rows with team data (11 columns: pos, logo, team, pts, w, l, gp, streak, for, against, diff)
         for row in soup.find_all('tr'):
             cells = row.find_all('td')
-            if len(cells) == 10:
+            if len(cells) >= 11 and 'standings_team' in str(row.get('class', [])):
                 team_link = row.find('a', href=lambda h: h and '/team/' in h)
                 if team_link:
                     span = team_link.find('span', class_='team-name-full')
@@ -512,11 +511,14 @@ def get_standings():
                         'rank': cells[0].get_text(strip=True),
                         'team': team_name,
                         'abbr': TEAM_MAP.get(team_name, ''),
-                        'gp': cells[6].get_text(strip=True),
+                        'pts': cells[3].get_text(strip=True),
                         'w': cells[4].get_text(strip=True),
                         'l': cells[5].get_text(strip=True),
-                        'pts': cells[3].get_text(strip=True),
-                        'diff': cells[9].get_text(strip=True)
+                        'gp': cells[6].get_text(strip=True),
+                        'streak': cells[7].get_text(strip=True),
+                        'for': cells[8].get_text(strip=True),
+                        'against': cells[9].get_text(strip=True),
+                        'diff': cells[10].get_text(strip=True)
                     })
         
         return jsonify({'standings': standings, 'count': len(standings)})
