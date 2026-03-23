@@ -552,31 +552,40 @@ def fetch():
 
 @app.route('/data')
 def get_data():
-    """Return cached data as JSON - auto-refreshes if older than 60 seconds"""
+    """Return player data - fetches fresh if no cache, auto-refreshes if older than 60 seconds"""
     
     AUTO_REFRESH_SECONDS = 60
     
-    fetched_at = cached_data.get('fetched_at')
-    if fetched_at:
-        try:
-            last_fetch = datetime.fromisoformat(fetched_at)
-            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
-                html_content, error = fetch_from_genius()
-                if not error:
-                    headers, data = extract_player_stats(html_content)
-                    cached_data['headers'] = headers
-                    cached_data['data'] = data
-                    cached_data['fetched_at'] = datetime.now().isoformat()
-                    cached_data['status'] = 'success'
-        except:
-            pass
-    
+    # Always fetch if no data in cache
     if not cached_data.get('data'):
-        return jsonify({
-            'error': 'No data available. Call /fetch first.',
-            'headers': [],
-            'data': []
-        }), 404
+        html_content, error = fetch_from_genius()
+        if error:
+            return jsonify({
+                'error': 'Failed to fetch: ' + error,
+                'headers': [],
+                'data': []
+            }), 500
+        headers, data = extract_player_stats(html_content)
+        cached_data['headers'] = headers
+        cached_data['data'] = data
+        cached_data['fetched_at'] = datetime.now().isoformat()
+        cached_data['status'] = 'success'
+    else:
+        # Auto-refresh if older than 60 seconds
+        fetched_at = cached_data.get('fetched_at')
+        if fetched_at:
+            try:
+                last_fetch = datetime.fromisoformat(fetched_at)
+                if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
+                    html_content, error = fetch_from_genius()
+                    if not error:
+                        headers, data = extract_player_stats(html_content)
+                        cached_data['headers'] = headers
+                        cached_data['data'] = data
+                        cached_data['fetched_at'] = datetime.now().isoformat()
+                        cached_data['status'] = 'success'
+            except:
+                pass
     
     return jsonify({
         'headers': cached_data['headers'],
