@@ -492,3 +492,4 @@ if __name__ == '__main__':
     print("Endpoints: /leaders, /standings, /rankings, /schedule, /team-stats")
     print("Live: /live/<game_id>/team|home|away|leaders")
     app.run(host='0.0.0.0', port=5001, debug=True)
+# Rebuilt at Mon Mar 23 14:36:41 CAST 2026
