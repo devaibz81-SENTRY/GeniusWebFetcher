@@ -58,6 +58,14 @@ cache = {k: {'data': None, 'fetched_at': None} for k in URLS}
 game_cache = {}
 FIBALIVE = "https://fibalivestats.dcd.shared.geniussports.com/data"
 
+# Legacy cache for /data endpoint
+cached_data = {
+    "headers": [],
+    "data": [],
+    "fetched_at": None,
+    "status": "empty"
+}
+
 
 def fetch_html(url):
     try:
@@ -71,6 +79,43 @@ def fetch_html(url):
     except Exception as e:
         print(f"Fetch error: {e}")
         return ""
+
+
+def fetch_from_genius():
+    """Fetch data from Genius Sports player statistics"""
+    try:
+        resp = requests.get(URLS['player'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get('html', ''), None
+    except Exception as e:
+        return None, str(e)
+
+
+def extract_player_stats(html_content):
+    """Extract player statistics table from HTML"""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    players_data = []
+    headers = []
+    tables = soup.find_all('table')
+    
+    for table in tables:
+        rows = table.find_all('tr')
+        for i, row in enumerate(rows):
+            cells = row.find_all(['td', 'th'])
+            if cells:
+                row_data = []
+                for cell in cells:
+                    text = cell.get_text(strip=True)
+                    row_data.append(text)
+                
+                if i == 0:
+                    headers = row_data
+                else:
+                    if row_data:
+                        players_data.append(row_data)
+    
+    return headers, players_data
 
 
 def parse_leaders(html):
@@ -263,6 +308,67 @@ def parse_team_stats(html):
     return teams
 
 
+# ==================== LEGACY ENDPOINTS ====================
+
+@app.route('/fetch')
+def fetch():
+    """Trigger data fetch for /data endpoint"""
+    html_content, error = fetch_from_genius()
+    
+    if error:
+        cached_data['status'] = 'error'
+        return jsonify({'success': False, 'error': error})
+    
+    headers, data = extract_player_stats(html_content)
+    
+    cached_data['headers'] = headers
+    cached_data['data'] = data
+    cached_data['fetched_at'] = datetime.now().isoformat()
+    cached_data['status'] = 'success'
+    
+    return jsonify({
+        'success': True,
+        'players_found': len(data),
+        'columns': len(headers),
+        'fetched_at': cached_data['fetched_at']
+    })
+
+
+@app.route('/data')
+def get_data():
+    """Return cached player data as JSON - auto-refreshes if older than 60 seconds"""
+    AUTO_REFRESH_SECONDS = 60
+    
+    fetched_at = cached_data.get('fetched_at')
+    if fetched_at:
+        try:
+            last_fetch = datetime.fromisoformat(fetched_at)
+            if datetime.now() - last_fetch > timedelta(seconds=AUTO_REFRESH_SECONDS):
+                html_content, error = fetch_from_genius()
+                if not error:
+                    headers, data = extract_player_stats(html_content)
+                    cached_data['headers'] = headers
+                    cached_data['data'] = data
+                    cached_data['fetched_at'] = datetime.now().isoformat()
+                    cached_data['status'] = 'success'
+        except:
+            pass
+    
+    if not cached_data.get('data'):
+        return jsonify({
+            'error': 'No data available. Call /fetch first.',
+            'headers': [],
+            'data': []
+        }), 404
+    
+    return jsonify({
+        'headers': cached_data['headers'],
+        'data': cached_data['data'],
+        'fetched_at': cached_data['fetched_at'],
+        'player_count': len(cached_data['data'])
+    })
+
+
 # ==================== ROUTES ====================
 
 @app.route('/')
@@ -271,15 +377,16 @@ def index():
         'name': 'NEBL Global Server',
         'status': 'online',
         'endpoints': [
+            '/data - Player rankings (JSON)',
+            '/fetch - Trigger player data fetch',
             '/leaders - All 15 categories',
             '/standings - League standings',
-            '/rankings - Player rankings',
+            '/rankings - Player rankings (parsed)',
             '/schedule - Game schedule',
             '/team-stats - Team statistics',
             '/live/<game_id> - Live game',
             '/health - Status',
-            '/refresh - Force refresh',
-            '/debug/standings - Debug standings'
+            '/refresh - Force refresh all'
         ]
     })
 
