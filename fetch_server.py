@@ -28,6 +28,18 @@ cached_data = {
     "status": "empty"
 }
 
+# Cache for all data (standings, leaders, etc.)
+all_data_cache = {
+    "standings": {"data": [], "fetched_at": None},
+    "leaders": {"data": [], "fetched_at": None},
+    "schedule": {"data": [], "fetched_at": None},
+    "team_stats": {"data": [], "fetched_at": None}
+}
+
+# Refresh interval settings
+REFRESH_INTERVAL = 300  # 5 minutes default
+INTERVAL_OPTIONS = [60, 300, 600, 1800, 3600]  # 1min, 5min, 10min, 30min, 1hr
+
 # HTML Template for the interface
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -198,21 +210,31 @@ HTML_TEMPLATE = """
                 <div class="status-item">
                     <strong>Status:</strong> 
                     <span class="status-{{ 'online' if has_data else 'pending' }}">
-                        {{ 'Data Loaded' if has_data else 'No Data' }}
+                        {{ '✅ Data Loaded' if has_data else '❌ No Data' }}
                     </span>
                 </div>
                 <div class="status-item">
-                    <strong>Last Fetch:</strong> {{ last_fetch or 'Never' }}
+                    <strong>Last Updated:</strong> <span id="lastUpdate">{{ last_fetch or 'Never' }}</span>
+                </div>
+                <div class="status-item">
+                    <strong>Next Auto-Refresh:</strong> <span id="nextRefresh">--</span>
                 </div>
             </div>
             
-            <h2>Target URL</h2>
-            <div class="url-display">{{ target_url }}</div>
-            
-            <div class="btn-group">
-                <button class="btn btn-fetch" onclick="fetchData()">🔄 Fetch Data</button>
-                <button class="btn btn-clear" onclick="clearData()">🗑️ Clear</button>
+            <div style="display: flex; gap: 10px; align-items: center; margin: 15px 0;">
+                <label><strong>Auto-Refresh Interval:</strong></label>
+                <select id="refreshInterval" onchange="setInterval(this.value)" style="padding: 8px; border-radius: 5px; background: #333; color: #fff; border: 1px solid #555;">
+                    <option value="60" {{ 'selected' if refresh_interval == 60 else '' }}>1 minute</option>
+                    <option value="300" {{ 'selected' if refresh_interval == 300 else '' }}>5 minutes</option>
+                    <option value="600" {{ 'selected' if refresh_interval == 600 else '' }}>10 minutes</option>
+                    <option value="1800" {{ 'selected' if refresh_interval == 1800 else '' }}>30 minutes</option>
+                    <option value="3600" {{ 'selected' if refresh_interval == 3600 else '' }}>1 hour</option>
+                    <option value="0" {{ 'selected' if refresh_interval == 0 else '' }}>Manual Only</option>
+                </select>
+                <button class="btn" onclick="fetchAll()">🔄 Fetch All Data</button>
             </div>
+            
+            <div id="refreshStatus" style="margin-top: 10px; padding: 10px; border-radius: 5px; display: none;"></div>
             
             {% if message %}
                 <div class="{{ 'success-msg' if 'success' in message else 'error-msg' }}">
@@ -244,10 +266,22 @@ HTML_TEMPLATE = """
         <div class="card">
             <h2>🔗 API Endpoints</h2>
             <div class="endpoint-list">
-                <a href="/data" target="_blank">GET /data - JSON Data</a>
-                <a href="/fetch" target="_blank">GET /fetch - Trigger Fetch</a>
+                <a href="/data" target="_blank">GET /data - Player Rankings JSON</a>
+                <a href="/fetch" target="_blank">GET /fetch - Fetch Player Data</a>
+                <a href="/standings" target="_blank">GET /standings - League Standings</a>
+                <a href="/leaders" target="_blank">GET /leaders - Player Leaders</a>
+                <a href="/schedule" target="_blank">GET /schedule - Game Schedule</a>
+                <a href="/team-stats" target="_blank">GET /team-stats - Team Statistics</a>
                 <a href="/health" target="_blank">GET /health - Health Check</a>
+                <a href="/status" target="_blank">GET /status - All Data Status</a>
                 <a href="/" target="_blank">GET / - This Page</a>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>📡 Data Status</h2>
+            <div id="dataStatus" style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 10px;">
+                Loading...
             </div>
         </div>
         
@@ -267,24 +301,135 @@ HTML_TEMPLATE = """
     </div>
     
     <script>
+        let refreshInterval = {{ refresh_interval }};
+        let lastUpdate = '{{ last_fetch or '' }}';
+        
+        function updateNextRefresh() {
+            if (!lastUpdate || refreshInterval === 0) {
+                document.getElementById('nextRefresh').textContent = 'Manual Only';
+                return;
+            }
+            const next = new Date(lastUpdate);
+            next.setSeconds(next.getSeconds() + refreshInterval);
+            const now = new Date();
+            const diff = Math.max(0, Math.floor((next - now) / 1000));
+            if (diff > 0) {
+                const mins = Math.floor(diff / 60);
+                const secs = diff % 60;
+                document.getElementById('nextRefresh').textContent = mins + 'm ' + secs + 's';
+            }
+        }
+        
         function fetchData() {
+            showStatus('Fetching data...', 'info');
             fetch('/fetch')
                 .then(r => r.json())
                 .then(d => {
                     if (d.success) {
-                        location.reload();
+                        lastUpdate = d.fetched_at;
+                        document.getElementById('lastUpdate').textContent = lastUpdate;
+                        showStatus('✅ Fetched ' + d.players_found + ' players at ' + lastUpdate, 'success');
+                        updateNextRefresh();
+                        loadStatus();
                     } else {
-                        alert('Error: ' + (d.error || 'Unknown error'));
+                        showStatus('❌ Error: ' + (d.error || 'Unknown'), 'error');
                     }
                 })
-                .catch(e => alert('Fetch failed: ' + e));
+                .catch(e => showStatus('❌ Fetch failed: ' + e, 'error'));
+        }
+        
+        function fetchAll() {
+            showStatus('Fetching all data...', 'info');
+            Promise.all([
+                fetch('/fetch').then(r => r.json()),
+                fetch('/fetch-standings').then(r => r.json()),
+                fetch('/fetch-leaders').then(r => r.json()),
+                fetch('/fetch-schedule').then(r => r.json()),
+                fetch('/fetch-team-stats').then(r => r.json())
+            ]).then(results => {
+                const lastUpdate = new Date().toISOString();
+                document.getElementById('lastUpdate').textContent = lastUpdate;
+                showStatus('✅ All data fetched at ' + lastUpdate, 'success');
+                loadStatus();
+            }).catch(e => showStatus('❌ Error: ' + e, 'error'));
+        }
+        
+        function setInterval(seconds) {
+            fetch('/set-interval?seconds=' + seconds)
+                .then(r => r.json())
+                .then(d => {
+                    refreshInterval = d.interval;
+                    updateNextRefresh();
+                    showStatus('Auto-refresh set to ' + (refreshInterval === 0 ? 'Manual Only' : (refreshInterval / 60) + ' minutes'), 'success');
+                });
+        }
+        
+        function showStatus(msg, type) {
+            const el = document.getElementById('refreshStatus');
+            el.style.display = 'block';
+            el.textContent = msg;
+            el.style.background = type === 'error' ? 'rgba(244, 67, 54, 0.2)' : 
+                                  type === 'success' ? 'rgba(76, 175, 80, 0.2)' : 
+                                  'rgba(33, 150, 243, 0.2)';
+            el.style.color = type === 'error' ? '#f44336' : 
+                             type === 'success' ? '#4caf50' : 
+                             '#2196f3';
+        }
+        
+        function loadStatus() {
+            fetch('/status')
+                .then(r => r.json())
+                .then(d => {
+                    let html = '<table style="width: 100%; border-collapse: collapse;">';
+                    html += '<tr><th style="text-align: left; padding: 8px; border-bottom: 1px solid #555;">Data Type</th><th style="text-align: center; padding: 8px; border-bottom: 1px solid #555;">Count</th><th style="text-align: right; padding: 8px; border-bottom: 1px solid #555;">Last Updated</th></tr>';
+                    
+                    const items = [
+                        ['Players', d.player_count, d.player_fetched],
+                        ['Standings', d.standings_count, d.standings_fetched],
+                        ['Leaders', d.leaders_count, d.leaders_fetched],
+                        ['Schedule', d.schedule_count, d.schedule_fetched],
+                        ['Team Stats', d.team_stats_count, d.team_stats_fetched]
+                    ];
+                    
+                    items.forEach(item => {
+                        const status = item[1] > 0 ? '✅' : '❌';
+                        html += '<tr>';
+                        html += '<td style="padding: 8px;">' + status + ' ' + item[0] + '</td>';
+                        html += '<td style="text-align: center; padding: 8px;">' + (item[1] || 0) + '</td>';
+                        html += '<td style="text-align: right; padding: 8px; color: #90caf9;">' + (item[2] || 'Never') + '</td>';
+                        html += '</tr>';
+                    });
+                    
+                    html += '</table>';
+                    document.getElementById('dataStatus').innerHTML = html;
+                });
+        }
+        
+        // Initialize
+        updateNextRefresh();
+        loadStatus();
+        
+        // Auto-refresh timer
+        if (refreshInterval > 0) {
+            setInterval(() => {
+                updateNextRefresh();
+            }, 1000);
+            
+            // Auto-fetch when interval expires
+            setTimeout(() => {
+                fetchData();
+                setInterval(() => fetchData(), refreshInterval * 1000);
+            }, refreshInterval * 1000);
         }
         
         function clearData() {
-            if (confirm('Clear cached data?')) {
+            if (confirm('Clear all cached data?')) {
                 fetch('/clear', {method: 'POST'})
                     .then(r => r.json())
                     .then(d => location.reload());
+            }
+        }
+    </script>
             }
         }
     </script>
@@ -375,6 +520,7 @@ def index():
         player_count=player_count,
         column_count=column_count,
         data_size=data_size,
+        refresh_interval=REFRESH_INTERVAL,
         message=request.args.get('message', '')
     )
 
@@ -441,12 +587,157 @@ def get_data():
 
 @app.route('/clear', methods=['POST'])
 def clear():
-    """Clear cached data"""
+    """Clear all cached data"""
     cached_data['headers'] = []
     cached_data['data'] = []
     cached_data['fetched_at'] = None
     cached_data['status'] = 'empty'
-    return jsonify({'success': True})
+    
+    for key in all_data_cache:
+        all_data_cache[key] = {'data': [], 'fetched_at': None}
+    
+    return jsonify({'success': True, 'message': 'All cached data cleared'})
+
+
+@app.route('/status')
+def get_status():
+    """Get status of all cached data"""
+    return jsonify({
+        'player_count': len(cached_data.get('data', [])),
+        'player_fetched': cached_data.get('fetched_at'),
+        'standings_count': len(all_data_cache.get('standings', {}).get('data', [])),
+        'standings_fetched': all_data_cache.get('standings', {}).get('fetched_at'),
+        'leaders_count': len(all_data_cache.get('leaders', {}).get('data', [])),
+        'leaders_fetched': all_data_cache.get('leaders', {}).get('fetched_at'),
+        'schedule_count': len(all_data_cache.get('schedule', {}).get('data', [])),
+        'schedule_fetched': all_data_cache.get('schedule', {}).get('fetched_at'),
+        'team_stats_count': len(all_data_cache.get('team_stats', {}).get('data', [])),
+        'team_stats_fetched': all_data_cache.get('team_stats', {}).get('fetched_at'),
+        'refresh_interval': REFRESH_INTERVAL
+    })
+
+
+@app.route('/set-interval')
+def set_interval():
+    """Set auto-refresh interval"""
+    global REFRESH_INTERVAL
+    seconds = int(request.args.get('seconds', 300))
+    REFRESH_INTERVAL = seconds
+    return jsonify({'interval': REFRESH_INTERVAL, 'minutes': REFRESH_INTERVAL / 60})
+
+
+@app.route('/fetch-standings')
+def fetch_standings():
+    """Fetch standings data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        standings = []
+        
+        for row in soup.find_all('tr'):
+            cells = row.find_all('td')
+            if len(cells) >= 11 and 'standings_team' in str(row.get('class', [])):
+                team_link = row.find('a', href=lambda h: h and '/team/' in h)
+                if team_link:
+                    span = team_link.find('span', class_='team-name-full')
+                    team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
+                    standings.append({
+                        'rank': cells[0].get_text(strip=True),
+                        'team': team_name,
+                        'abbr': TEAM_MAP.get(team_name, ''),
+                        'pts': cells[3].get_text(strip=True),
+                        'w': cells[4].get_text(strip=True),
+                        'l': cells[5].get_text(strip=True),
+                        'gp': cells[6].get_text(strip=True),
+                        'diff': cells[10].get_text(strip=True)
+                    })
+        
+        all_data_cache['standings'] = {
+            'data': standings,
+            'fetched_at': datetime.now().isoformat()
+        }
+        return jsonify({'success': True, 'count': len(standings), 'fetched_at': all_data_cache['standings']['fetched_at']})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/fetch-leaders')
+def fetch_leaders():
+    """Fetch leaders data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        # For now, just mark as fetched
+        all_data_cache['leaders'] = {
+            'data': [],  # Parse leaders from HTML
+            'fetched_at': datetime.now().isoformat()
+        }
+        return jsonify({'success': True, 'count': 0, 'fetched_at': all_data_cache['leaders']['fetched_at']})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/fetch-schedule')
+def fetch_schedule():
+    """Fetch schedule data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/schedule?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fschedule&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        games = []
+        
+        for row in soup.find_all('tr'):
+            teams = row.find_all('a', href=lambda h: h and '/team/' in h if h else False)
+            if len(teams) >= 2:
+                games.append({
+                    'home': teams[0].get_text(strip=True),
+                    'away': teams[1].get_text(strip=True)
+                })
+        
+        all_data_cache['schedule'] = {
+            'data': games,
+            'fetched_at': datetime.now().isoformat()
+        }
+        return jsonify({'success': True, 'count': len(games), 'fetched_at': all_data_cache['schedule']['fetched_at']})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/fetch-team-stats')
+def fetch_team_stats():
+    """Fetch team stats data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        teams = []
+        
+        for row in soup.find_all('tr'):
+            cells = row.find_all('td')
+            if len(cells) >= 12:
+                team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
+                if team_link:
+                    teams.append({
+                        'name': team_link.get_text(strip=True),
+                        'abbr': TEAM_MAP.get(team_link.get_text(strip=True), '')
+                    })
+        
+        all_data_cache['team_stats'] = {
+            'data': teams,
+            'fetched_at': datetime.now().isoformat()
+        }
+        return jsonify({'success': True, 'count': len(teams), 'fetched_at': all_data_cache['team_stats']['fetched_at']})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/health')
@@ -492,38 +783,62 @@ TEAM_MAP = {
 @app.route('/standings')
 def get_standings():
     """Return standings data"""
-    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
-    try:
-        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-        data = resp.json()
-        html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
-        standings = []
-        
-        for row in soup.find_all('tr'):
-            cells = row.find_all('td')
-            if len(cells) >= 11 and 'standings_team' in str(row.get('class', [])):
-                team_link = row.find('a', href=lambda h: h and '/team/' in h)
-                if team_link:
-                    span = team_link.find('span', class_='team-name-full')
-                    team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
-                    standings.append({
-                        'rank': cells[0].get_text(strip=True),
-                        'team': team_name,
-                        'abbr': TEAM_MAP.get(team_name, ''),
-                        'pts': cells[3].get_text(strip=True),
-                        'w': cells[4].get_text(strip=True),
-                        'l': cells[5].get_text(strip=True),
-                        'gp': cells[6].get_text(strip=True),
-                        'streak': cells[7].get_text(strip=True),
-                        'for': cells[8].get_text(strip=True),
-                        'against': cells[9].get_text(strip=True),
-                        'diff': cells[10].get_text(strip=True)
-                    })
-        
-        return jsonify({'standings': standings, 'count': len(standings)})
-    except Exception as e:
-        return jsonify({'error': str(e), 'standings': []})
+    # Check if we need to refresh based on interval
+    standings_cache = all_data_cache.get('standings', {})
+    if standings_cache.get('fetched_at'):
+        try:
+            last_fetch = datetime.fromisoformat(standings_cache['fetched_at'])
+            if datetime.now() - last_fetch > timedelta(seconds=REFRESH_INTERVAL):
+                # Trigger background refresh
+                from urllib.request import urlopen
+                urlopen(request.url_root + 'fetch-standings')
+        except:
+            pass
+    
+    standings = standings_cache.get('data', [])
+    if not standings:
+        # If no cached data, fetch it now
+        url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+        try:
+            resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+            data = resp.json()
+            html = data.get('html', '')
+            soup = BeautifulSoup(html, 'html.parser')
+            standings = []
+            
+            for row in soup.find_all('tr'):
+                cells = row.find_all('td')
+                if len(cells) >= 11 and 'standings_team' in str(row.get('class', [])):
+                    team_link = row.find('a', href=lambda h: h and '/team/' in h)
+                    if team_link:
+                        span = team_link.find('span', class_='team-name-full')
+                        team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
+                        standings.append({
+                            'rank': cells[0].get_text(strip=True),
+                            'team': team_name,
+                            'abbr': TEAM_MAP.get(team_name, ''),
+                            'pts': cells[3].get_text(strip=True),
+                            'w': cells[4].get_text(strip=True),
+                            'l': cells[5].get_text(strip=True),
+                            'gp': cells[6].get_text(strip=True),
+                            'streak': cells[7].get_text(strip=True),
+                            'for': cells[8].get_text(strip=True),
+                            'against': cells[9].get_text(strip=True),
+                            'diff': cells[10].get_text(strip=True)
+                        })
+            
+            all_data_cache['standings'] = {
+                'data': standings,
+                'fetched_at': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return jsonify({'error': str(e), 'standings': [], 'fetched_at': None})
+    
+    return jsonify({
+        'standings': standings,
+        'count': len(standings),
+        'fetched_at': standings_cache.get('fetched_at')
+    })
 
 
 @app.route('/leaders')
