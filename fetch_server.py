@@ -1084,11 +1084,48 @@ def get_team_stats():
                 else:
                     result['floor_game'].append(team_data)  # Default to floor game
         
+        # Build simplified teams array with common field names
+        simplified_teams = []
+        floor_by_name = {t['name']: t for t in result['floor_game']}
+        shoot_by_name = {t['name']: t for t in result['shooting']}
+        
+        for name in set(list(floor_by_name.keys()) + list(shoot_by_name.keys())):
+            floor = floor_by_name.get(name, {})
+            shoot = shoot_by_name.get(name, {})
+            combined = {
+                'name': name,
+                'abbr': floor.get('abbr', shoot.get('abbr', '')),
+                'team': name,
+                # Floor game stats
+                'pts': floor.get('average_points', ''),
+                'reb': floor.get('personal_reb', ''),
+                'stl': floor.get('average_steals', ''),
+                'blk': floor.get('average_blocks', ''),
+                'pf': floor.get('personal_fouls', ''),
+                'fbp': floor.get('average_fast_break_points', ''),
+                'pft': floor.get('average_points_from_turnovers', ''),
+                'pip': floor.get('average_points_in_paint', ''),
+                # Shooting stats
+                'fgm': shoot.get('field_goals_made', ''),
+                'fga': shoot.get('field_goals_attempted', ''),
+                'fgp': shoot.get('field_goal_percentage', ''),
+                'ftm': shoot.get('free_throws_made', ''),
+                'fta': shoot.get('free_throws_attempted', ''),
+                'ftp': shoot.get('free_throw_percentage', ''),
+                'tpm': shoot.get('3_pointers_made', ''),
+                'tpa': shoot.get('3_points_attempted', ''),
+                'tpp': shoot.get('3_point_percentage', ''),
+                'twopm': shoot.get('2_point_made', ''),
+                'twopa': shoot.get('2_point_attempted', ''),
+                'twopp': shoot.get('2_point_percentage', ''),
+            }
+            simplified_teams.append(combined)
+        
         return jsonify({
-            'teams': result['floor_game'],
+            'teams': simplified_teams,
             'floor_game': result['floor_game'],
             'shooting': result['shooting'],
-            'count': len(result['floor_game']),
+            'count': len(simplified_teams),
             'fetched_at': result['fetched_at']
         })
     except Exception as e:
