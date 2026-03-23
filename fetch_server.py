@@ -475,6 +475,77 @@ def set_url():
     return jsonify({'url': TARGET_URL})
 
 
+# ==================== ADDITIONAL ENDPOINTS ====================
+
+TEAM_MAP = {
+    "Orange Walk Running Rebels": "OWR",
+    "San Pedro Tiger Sharks": "SPT",
+    "Cayo Western Ballaz": "CWB",
+    "Belize City Defenders": "DEF",
+    "Belmopan Trojans": "BMP",
+    "Griga Dream Ballers": "DDB",
+    "EZ Investment Griga Dream Ballers": "DDB",
+    "Corozal Spartans": "COR"
+}
+
+
+@app.route('/standings')
+def get_standings():
+    """Return standings data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        standings = []
+        for row in soup.find_all('tr'):
+            cells = row.find_all(['td', 'th'])
+            if len(cells) >= 6:
+                team_link = row.find('a', href=lambda h: h and '/team/' in h)
+                if team_link:
+                    team_name = team_link.get_text(strip=True)
+                    pts = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                    w = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                    l = cells[5].get_text(strip=True) if len(cells) > 5 else ''
+                    gp = cells[6].get_text(strip=True) if len(cells) > 6 else ''
+                    standings.append({
+                        'team': team_name,
+                        'abbr': TEAM_MAP.get(team_name, ''),
+                        'gp': gp,
+                        'w': w,
+                        'l': l,
+                        'pts': pts
+                    })
+        return jsonify({'standings': standings, 'count': len(standings)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'standings': []})
+
+
+@app.route('/leaders')
+def get_leaders():
+    """Return leaders data"""
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        return jsonify({'categories': [], 'count': 0, 'raw': data.get('html', '')[:500]})
+    except Exception as e:
+        return jsonify({'error': str(e), 'categories': []})
+
+
+@app.route('/schedule')
+def get_schedule():
+    """Return schedule data"""
+    return jsonify({'schedule': [], 'count': 0})
+
+
+@app.route('/team-stats')
+def get_team_stats():
+    """Return team stats data"""
+    return jsonify({'teams': [], 'count': 0})
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
