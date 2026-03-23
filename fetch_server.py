@@ -499,24 +499,26 @@ def get_standings():
         html = data.get('html', '')
         soup = BeautifulSoup(html, 'html.parser')
         standings = []
+        
+        # Find all rows with team data (11 columns: pos, logo, team, pts, w, l, gp, streak, for, against, diff)
         for row in soup.find_all('tr'):
-            cells = row.find_all(['td', 'th'])
-            if len(cells) >= 6:
+            cells = row.find_all('td')
+            if len(cells) == 10:
                 team_link = row.find('a', href=lambda h: h and '/team/' in h)
                 if team_link:
-                    team_name = team_link.get_text(strip=True)
-                    pts = cells[3].get_text(strip=True) if len(cells) > 3 else ''
-                    w = cells[4].get_text(strip=True) if len(cells) > 4 else ''
-                    l = cells[5].get_text(strip=True) if len(cells) > 5 else ''
-                    gp = cells[6].get_text(strip=True) if len(cells) > 6 else ''
+                    span = team_link.find('span', class_='team-name-full')
+                    team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
                     standings.append({
+                        'rank': cells[0].get_text(strip=True),
                         'team': team_name,
                         'abbr': TEAM_MAP.get(team_name, ''),
-                        'gp': gp,
-                        'w': w,
-                        'l': l,
-                        'pts': pts
+                        'gp': cells[6].get_text(strip=True),
+                        'w': cells[4].get_text(strip=True),
+                        'l': cells[5].get_text(strip=True),
+                        'pts': cells[3].get_text(strip=True),
+                        'diff': cells[9].get_text(strip=True)
                     })
+        
         return jsonify({'standings': standings, 'count': len(standings)})
     except Exception as e:
         return jsonify({'error': str(e), 'standings': []})
@@ -529,7 +531,45 @@ def get_leaders():
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
         data = resp.json()
-        return jsonify({'categories': [], 'count': 0, 'raw': data.get('html', '')[:500]})
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        categories = []
+        cat_names = [
+            ('Efficiency', 'EFF', 'EfficiencyCustom'),
+            ('Average Points', 'PPG', 'Average points'),
+            ('Average Assists', 'APG', 'Average assists'),
+            ('Average Rebounds', 'RPG', 'Average total rebounds'),
+            ('Field Goal %', 'FG%', 'Field goal percentage'),
+            ('3-Point %', '3P%', '3 Point percentage'),
+            ('Free Throw %', 'FT%', 'Free throw percentage'),
+            ('Average Minutes', 'MPG', 'Average minutes')
+        ]
+        
+        for name, abbr, search in cat_names:
+            cat_div = soup.find('div', id=lambda x: x and search in x if x else False)
+            if cat_div:
+                players = []
+                rows = cat_div.find_all('tr')[:10]
+                for row in rows:
+                    cells = row.find_all('td')
+                    if len(cells) >= 3:
+                        player_link = row.find('a', href=lambda h: h and '/person/' in h if h else False)
+                        team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
+                        player_name = player_link.get_text(strip=True) if player_link else ''
+                        team_name = team_link.get_text(strip=True) if team_link else ''
+                        value = cells[-1].get_text(strip=True)
+                        if player_name:
+                            players.append({
+                                'name': player_name,
+                                'team': team_name,
+                                'abbr': TEAM_MAP.get(team_name, ''),
+                                'value': value
+                            })
+                if players:
+                    categories.append({'name': name, 'abbr': abbr, 'players': players})
+        
+        return jsonify({'categories': categories, 'count': len(categories)})
     except Exception as e:
         return jsonify({'error': str(e), 'categories': []})
 
@@ -537,13 +577,72 @@ def get_leaders():
 @app.route('/schedule')
 def get_schedule():
     """Return schedule data"""
-    return jsonify({'schedule': [], 'count': 0})
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/schedule?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fschedule&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        games = []
+        
+        for row in soup.find_all('tr'):
+            teams = row.find_all('a', href=lambda h: h and '/team/' in h if h else False)
+            if len(teams) >= 2:
+                home = teams[0].get_text(strip=True)
+                away = teams[1].get_text(strip=True)
+                date_cell = row.find('td', class_=lambda x: 'date' in x if x else False)
+                date = date_cell.get_text(strip=True) if date_cell else ''
+                games.append({
+                    'date': date,
+                    'home': home,
+                    'away': away,
+                    'home_abbr': TEAM_MAP.get(home, ''),
+                    'away_abbr': TEAM_MAP.get(away, '')
+                })
+        
+        return jsonify({'schedule': games, 'count': len(games)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'schedule': []})
 
 
 @app.route('/team-stats')
 def get_team_stats():
     """Return team stats data"""
-    return jsonify({'teams': [], 'count': 0})
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        teams = []
+        
+        for row in soup.find_all('tr'):
+            cells = row.find_all('td')
+            if len(cells) >= 12:
+                team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
+                if team_link:
+                    team_name = team_link.get_text(strip=True)
+                    teams.append({
+                        'name': team_name,
+                        'abbr': TEAM_MAP.get(team_name, ''),
+                        'gp': cells[0].get_text(strip=True),
+                        'pts': cells[1].get_text(strip=True),
+                        'fgm': cells[2].get_text(strip=True),
+                        'fga': cells[3].get_text(strip=True),
+                        'fgp': cells[4].get_text(strip=True),
+                        'tpm': cells[5].get_text(strip=True),
+                        'tpa': cells[6].get_text(strip=True),
+                        'tpp': cells[7].get_text(strip=True),
+                        'ftm': cells[8].get_text(strip=True),
+                        'fta': cells[9].get_text(strip=True),
+                        'ftp': cells[10].get_text(strip=True),
+                        'reb': cells[11].get_text(strip=True),
+                        'ast': cells[12].get_text(strip=True) if len(cells) > 12 else ''
+                    })
+        
+        return jsonify({'teams': teams, 'count': len(teams)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'teams': []})
 
 
 if __name__ == '__main__':
