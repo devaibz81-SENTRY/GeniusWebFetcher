@@ -783,113 +783,160 @@ TEAM_MAP = {
 @app.route('/standings')
 def get_standings():
     """Return standings data"""
-    # Check if we need to refresh based on interval
-    standings_cache = all_data_cache.get('standings', {})
-    if standings_cache.get('fetched_at'):
-        try:
-            last_fetch = datetime.fromisoformat(standings_cache['fetched_at'])
-            if datetime.now() - last_fetch > timedelta(seconds=REFRESH_INTERVAL):
-                # Trigger background refresh
-                from urllib.request import urlopen
-                urlopen(request.url_root + 'fetch-standings')
-        except:
-            pass
-    
-    standings = standings_cache.get('data', [])
-    if not standings:
-        # If no cached data, fetch it now
-        url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
-        try:
-            resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-            data = resp.json()
-            html = data.get('html', '')
-            soup = BeautifulSoup(html, 'html.parser')
-            standings = []
-            
-            for row in soup.find_all('tr'):
-                cells = row.find_all('td')
-                if len(cells) >= 11 and 'standings_team' in str(row.get('class', [])):
-                    team_link = row.find('a', href=lambda h: h and '/team/' in h)
-                    if team_link:
-                        span = team_link.find('span', class_='team-name-full')
-                        team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
-                        standings.append({
-                            'rank': cells[0].get_text(strip=True),
-                            'team': team_name,
-                            'abbr': TEAM_MAP.get(team_name, ''),
-                            'pts': cells[3].get_text(strip=True),
-                            'w': cells[4].get_text(strip=True),
-                            'l': cells[5].get_text(strip=True),
-                            'gp': cells[6].get_text(strip=True),
-                            'streak': cells[7].get_text(strip=True),
-                            'for': cells[8].get_text(strip=True),
-                            'against': cells[9].get_text(strip=True),
-                            'diff': cells[10].get_text(strip=True)
-                        })
-            
-            all_data_cache['standings'] = {
-                'data': standings,
-                'fetched_at': datetime.now().isoformat()
-            }
-        except Exception as e:
-            return jsonify({'error': str(e), 'standings': [], 'fetched_at': None})
-    
-    return jsonify({
-        'standings': standings,
-        'count': len(standings),
-        'fetched_at': standings_cache.get('fetched_at')
-    })
+    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        data = resp.json()
+        html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
+        standings = []
+        
+        for row in soup.find_all('tr'):
+            cells = row.find_all('td')
+            row_class = ' '.join(row.get('class', []))
+            if len(cells) >= 11 and 'standings_team' in row_class:
+                team_link = row.find('a', href=lambda h: h and '/team/' in h)
+                if team_link:
+                    span = team_link.find('span', class_='team-name-full')
+                    team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
+                    standings.append({
+                        'rank': cells[0].get_text(strip=True),
+                        'team': team_name,
+                        'abbr': TEAM_MAP.get(team_name, ''),
+                        'pts': cells[3].get_text(strip=True),
+                        'w': cells[4].get_text(strip=True),
+                        'l': cells[5].get_text(strip=True),
+                        'gp': cells[6].get_text(strip=True),
+                        'streak': cells[7].get_text(strip=True),
+                        'for': cells[8].get_text(strip=True),
+                        'against': cells[9].get_text(strip=True),
+                        'diff': cells[10].get_text(strip=True)
+                    })
+        
+        # Cache the data
+        all_data_cache['standings'] = {
+            'data': standings,
+            'fetched_at': datetime.now().isoformat()
+        }
+        
+        return jsonify({
+            'standings': standings,
+            'count': len(standings),
+            'fetched_at': all_data_cache['standings']['fetched_at']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'standings': [], 'count': 0})
 
 
 @app.route('/leaders')
 def get_leaders():
-    """Return leaders data - Parse HTML from Genius Sports"""
+    """Return leaders data - Parse HTML with dblock div structure"""
     url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
         data = resp.json()
         html = data.get('html', '')
+        soup = BeautifulSoup(html, 'html.parser')
         
         categories = []
-        cat_names = [
-            ('Efficiency', 'EFF', 'EfficiencyCustom'),
-            ('Average Points', 'PPG', 'Average points'),
-            ('Average Assists', 'APG', 'Average assists'),
-            ('Average Rebounds', 'RPG', 'Average total rebounds'),
-            ('Field Goal %', 'FG%', 'Field goal percentage'),
-            ('3-Point %', '3P%', '3 Point percentage'),
-            ('Free Throw %', 'FT%', 'Free throw percentage'),
-            ('Average Minutes', 'MPG', 'Average minutes')
-        ]
         
-        for name, abbr, search in cat_names:
-            catIndex = html.find(search)
-            if catIndex == -1:
+        # Map of block IDs to category names and abbreviations
+        cat_map = {
+            'EfficiencyCustom': ('Efficiency', 'EFF'),
+            'PointsAverage': ('Average Points', 'PPG'),
+            'AssistsAverage': ('Average Assists', 'APG'),
+            'ReboundsTotalAverage': ('Avg Total Reb', 'RPG'),
+            'ReboundsDefensiveAverage': ('Avg Def Reb', 'DRPG'),
+            'ReboundsOffensiveAverage': ('Avg Off Reb', 'ORPG'),
+            'BlocksAverage': ('Average Blocks', 'BLKPG'),
+            'StealsAverage': ('Average Steals', 'STPG'),
+            'FoulsOnAverage': ('Avg Fouls On', 'FOPG'),
+            'FieldGoalsPercentage': ('FG %', 'FG%'),
+            'ThreePointersMade': ('3PM', '3PM'),
+            'ThreePointersPercentage': ('3P %', '3P%'),
+            'TwoPointersPercentage': ('2P %', '2P%'),
+            'FreeThrowsPercentage': ('FT %', 'FT%'),
+            'MinutesAverage': ('Avg Minutes', 'MPG')
+        }
+        
+        # Find all dblock divs
+        for dblock in soup.find_all('div', class_='dblock'):
+            # Get category info from the header
+            header = dblock.find('div', class_='leader-header')
+            header_text = header.get_text(strip=True) if header else ''
+            
+            # Find matching category from map
+            cat_name = None
+            cat_abbr = None
+            for key, (name, abbr) in cat_map.items():
+                if key in dblock.get('id', ''):
+                    cat_name = name
+                    cat_abbr = abbr
+                    break
+            
+            if not cat_name:
                 continue
             
-            sectionStart = catIndex
-            sectionEnd = catIndex + 10000
-            section = html[sectionStart:sectionEnd]
-            
             players = []
-            rowMatches = re.findall(r'<tr[\s\S]*?</tr>', section, re.IGNORECASE)
             
-            for rowHtml in rowMatches[:10]:
-                playerMatch = re.search(r'person[^"]*">([^<]+)<', rowHtml)
-                teamMatch = re.search(r'class\s*=\s*"team"[^>]*>[\s]*<a[^>]*>([^<]+)<', rowHtml)
-                valueMatch = re.search(r'<td[^>]*>([\d.]+)</td>', rowHtml)
+            # Get top player (leader-first)
+            first_player = dblock.find('div', class_='leader-first')
+            if first_player:
+                player_name_elem = first_player.find('div', class_='ld-name')
+                player_name = player_name_elem.find('a').get_text(strip=True) if player_name_elem else ''
                 
-                if playerMatch:
-                    fullTeam = teamMatch.group(1).strip() if teamMatch else ""
+                team_div = first_player.find('div', class_='ld-team')
+                team_name = team_div.find('a').get_text(strip=True) if team_div else ''
+                
+                value_elem = first_player.find('div', class_='leader-first-value')
+                value_text = ''
+                if value_elem:
+                    # Get number before the stat name
+                    value_div = value_elem.get_text(strip=True)
+                    value_match = re.match(r'^([\d.]+)', value_div)
+                    value_text = value_match.group(1) if value_match else value_div
+                
+                if player_name:
                     players.append({
-                        'name': playerMatch.group(1).strip(),
-                        'team': fullTeam,
-                        'abbr': TEAM_MAP.get(fullTeam, ''),
-                        'value': valueMatch.group(1).strip() if valueMatch else ''
+                        'name': player_name,
+                        'team': team_name,
+                        'abbr': TEAM_MAP.get(team_name, ''),
+                        'value': value_text
                     })
             
+            # Get remaining players from table
+            table = dblock.find('table', class_='tableClass')
+            if table:
+                rows = table.find_all('tr')
+                for row in rows[:9]:  # Get top 9 more (total 10)
+                    cells = row.find_all('td')
+                    if len(cells) >= 3:
+                        # Player name is in first td
+                        player_link = cells[0].find('a')
+                        player_name = player_link.get_text(strip=True) if player_link else ''
+                        
+                        # Team is in second td
+                        team_link = cells[1].find('a')
+                        team_name = team_link.get_text(strip=True) if team_link else ''
+                        
+                        # Value is in last td
+                        value_text = cells[-1].get_text(strip=True)
+                        
+                        if player_name:
+                            players.append({
+                                'name': player_name,
+                                'team': team_name,
+                                'abbr': TEAM_MAP.get(team_name, ''),
+                                'value': value_text
+                            })
+            
             if players:
-                categories.append({'name': name, 'abbr': abbr, 'players': players})
+                categories.append({
+                    'name': cat_name,
+                    'abbr': cat_abbr,
+                    'header': header_text,
+                    'players': players
+                })
         
         return jsonify({'categories': categories, 'count': len(categories)})
     except Exception as e:
@@ -898,7 +945,7 @@ def get_leaders():
 
 @app.route('/schedule')
 def get_schedule():
-    """Return schedule data"""
+    """Return schedule data - Parse HTML with match-wrap divs"""
     url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/schedule?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fschedule&_cc=1&_lc=1&_nv=1&_mf=1"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
@@ -907,49 +954,51 @@ def get_schedule():
         soup = BeautifulSoup(html, 'html.parser')
         games = []
         
-        for row in soup.find_all('tr'):
-            cells = row.find_all('td')
-            teams = row.find_all('a', href=lambda h: h and '/team/' in h if h else False)
-            if len(teams) >= 2:
-                home = teams[0].get_text(strip=True)
-                away = teams[1].get_text(strip=True)
-                
-                # Extract date from cells
-                date = ""
-                for cell in cells:
-                    cell_text = cell.get_text(strip=True)
-                    if any(month in cell_text for month in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']):
-                        date = cell_text
-                        break
-                    if re.search(r'\d{1,2}:\d{2}', cell_text):
-                        date = cell_text
-                        break
-                
-                # Check for scores
-                scores = re.findall(r'\d+\s*-\s*\d+', row.get_text())
-                if scores:
-                    parts = re.split(r'\s*-\s*', scores[0])
-                    games.append({
-                        'date': date,
-                        'home': home,
-                        'away': away,
-                        'home_abbr': TEAM_MAP.get(home, ''),
-                        'away_abbr': TEAM_MAP.get(away, ''),
-                        'home_score': parts[0].strip() if len(parts) >= 1 else '',
-                        'away_score': parts[1].strip() if len(parts) >= 2 else '',
-                        'status': 'COMPLETED' if len(parts) >= 2 else 'SCHEDULED'
-                    })
-                else:
-                    games.append({
-                        'date': date,
-                        'home': home,
-                        'away': away,
-                        'home_abbr': TEAM_MAP.get(home, ''),
-                        'away_abbr': TEAM_MAP.get(away, ''),
-                        'home_score': '',
-                        'away_score': '',
-                        'status': 'SCHEDULED'
-                    })
+        # Parse div-based match structure
+        for match in soup.find_all('div', class_=lambda x: x and 'match-wrap' in x):
+            # Get status
+            match_class = ' '.join(match.get('class', []))
+            if 'STATUS_COMPLETE' in match_class:
+                status = 'COMPLETED'
+            elif 'STATUS_SCHEDULED' in match_class:
+                status = 'SCHEDULED'
+            else:
+                status = 'UNKNOWN'
+            
+            # Get date/time
+            date_elem = match.find('div', class_='match-time')
+            date = date_elem.find('span').get_text(strip=True) if date_elem else ''
+            
+            # Get venue
+            venue_elem = match.find('div', class_='match-venue')
+            venue = venue_elem.find('a').get_text(strip=True) if venue_elem else ''
+            
+            # Get home team info
+            home_team_div = match.find('div', class_='home-team')
+            home_full = home_team_div.find('span', class_='team-name-full').get_text(strip=True) if home_team_div else ''
+            home_code = home_team_div.find('span', class_='team-name-code').get_text(strip=True) if home_team_div else ''
+            home_score_elem = home_team_div.find('div', class_='fake-cell') if home_team_div else None
+            home_score = home_score_elem.get_text(strip=True) if home_score_elem else ''
+            
+            # Get away team info
+            away_team_div = match.find('div', class_='away-team')
+            away_full = away_team_div.find('span', class_='team-name-full').get_text(strip=True) if away_team_div else ''
+            away_code = away_team_div.find('span', class_='team-name-code').get_text(strip=True) if away_team_div else ''
+            away_score_elem = away_team_div.find('div', class_='fake-cell') if away_team_div else None
+            away_score = away_score_elem.get_text(strip=True) if away_score_elem else ''
+            
+            if home_full and away_full:
+                games.append({
+                    'date': date,
+                    'venue': venue,
+                    'home': home_full,
+                    'away': away_full,
+                    'home_abbr': TEAM_MAP.get(home_full, home_code),
+                    'away_abbr': TEAM_MAP.get(away_full, away_code),
+                    'home_score': home_score if home_score and home_score != '&nbsp;' else '',
+                    'away_score': away_score if away_score and away_score != '&nbsp;' else '',
+                    'status': status
+                })
         
         return jsonify({'schedule': games, 'count': len(games)})
     except Exception as e:
@@ -958,42 +1007,92 @@ def get_schedule():
 
 @app.route('/team-stats')
 def get_team_stats():
-    """Return team stats data"""
+    """Return team stats data - Parse HTML with dblock/table structure"""
     url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
         data = resp.json()
         html = data.get('html', '')
         soup = BeautifulSoup(html, 'html.parser')
-        teams = []
         
-        for row in soup.find_all('tr'):
-            cells = row.find_all('td')
-            if len(cells) >= 13:
-                team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
-                if team_link:
-                    team_name = team_link.get_text(strip=True)
-                    teams.append({
-                        'name': team_name,
-                        'abbr': TEAM_MAP.get(team_name, ''),
-                        'gp': cells[0].get_text(strip=True),
-                        'pts': cells[1].get_text(strip=True),
-                        'fgm': cells[2].get_text(strip=True),
-                        'fga': cells[3].get_text(strip=True),
-                        'fgp': cells[4].get_text(strip=True),
-                        'tpm': cells[5].get_text(strip=True),
-                        'tpa': cells[6].get_text(strip=True),
-                        'tpp': cells[7].get_text(strip=True),
-                        'ftm': cells[8].get_text(strip=True),
-                        'fta': cells[9].get_text(strip=True),
-                        'ftp': cells[10].get_text(strip=True),
-                        'reb': cells[11].get_text(strip=True),
-                        'ast': cells[12].get_text(strip=True) if len(cells) > 12 else ''
-                    })
+        result = {
+            'floor_game': [],
+            'shooting': [],
+            'fetched_at': datetime.now().isoformat()
+        }
         
-        return jsonify({'teams': teams, 'count': len(teams)})
+        # Find all dblock sections
+        for dblock in soup.find_all('div', class_='dblock'):
+            block_id = dblock.get('id', '')
+            block_name = dblock.get('data-blockname', '')
+            
+            # Get table
+            table = dblock.find('table', class_='tableClass')
+            if not table:
+                continue
+            
+            # Get headers from thead
+            headers = []
+            for th in table.find_all('th'):
+                # Get title attribute or text
+                title = th.get('title', '')
+                if title:
+                    headers.append(title)
+                else:
+                    # Clean up text
+                    text = th.get_text(strip=True)
+                    if text:
+                        headers.append(text)
+            
+            # Parse data rows
+            for row in table.find_all('tr'):
+                cells = row.find_all('td')
+                if not cells:
+                    continue
+                
+                # Get team name from link in first cell
+                team_cell = cells[0]
+                team_link = team_cell.find('a')
+                team_name = team_link.get_text(strip=True) if team_link else ''
+                
+                if not team_name:
+                    continue
+                
+                # Get remaining cell values
+                values = [cell.get_text(strip=True) for cell in cells[1:]]
+                
+                team_data = {
+                    'name': team_name,
+                    'abbr': TEAM_MAP.get(team_name, ''),
+                    'raw': dict(zip(headers[1:] if len(headers) > 1 else [], values))
+                }
+                
+                # Add all headers as individual fields
+                for i, header in enumerate(headers):
+                    if i < len(cells):
+                        if i == 0:
+                            team_data['team'] = team_name
+                        else:
+                            # Create safe field name
+                            field_name = header.lower().replace(' ', '_').replace('%', 'p').replace('.', '')
+                            team_data[field_name] = values[i-1] if i > 0 else values[i]
+                
+                if 'Floor Game Summary' in block_name or 'BLOCK_STATISTICS_TEAM_1' in block_id:
+                    result['floor_game'].append(team_data)
+                elif 'Shooting' in block_name or 'BLOCK_STATISTICS_TEAM_2' in block_id:
+                    result['shooting'].append(team_data)
+                else:
+                    result['floor_game'].append(team_data)  # Default to floor game
+        
+        return jsonify({
+            'teams': result['floor_game'],
+            'floor_game': result['floor_game'],
+            'shooting': result['shooting'],
+            'count': len(result['floor_game']),
+            'fetched_at': result['fetched_at']
+        })
     except Exception as e:
-        return jsonify({'error': str(e), 'teams': []})
+        return jsonify({'error': str(e), 'teams': [], 'floor_game': [], 'shooting': []})
 
 
 if __name__ == '__main__':
