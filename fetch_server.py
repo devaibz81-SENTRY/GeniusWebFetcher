@@ -843,13 +843,12 @@ def get_standings():
 
 @app.route('/leaders')
 def get_leaders():
-    """Return leaders data"""
+    """Return leaders data - Parse HTML from Genius Sports"""
     url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
         data = resp.json()
         html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
         
         categories = []
         cat_names = [
@@ -864,27 +863,33 @@ def get_leaders():
         ]
         
         for name, abbr, search in cat_names:
-            cat_div = soup.find('div', id=lambda x: x and search in x if x else False)
-            if cat_div:
-                players = []
-                rows = cat_div.find_all('tr')[:10]
-                for row in rows:
-                    cells = row.find_all('td')
-                    if len(cells) >= 3:
-                        player_link = row.find('a', href=lambda h: h and '/person/' in h if h else False)
-                        team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
-                        player_name = player_link.get_text(strip=True) if player_link else ''
-                        team_name = team_link.get_text(strip=True) if team_link else ''
-                        value = cells[-1].get_text(strip=True)
-                        if player_name:
-                            players.append({
-                                'name': player_name,
-                                'team': team_name,
-                                'abbr': TEAM_MAP.get(team_name, ''),
-                                'value': value
-                            })
-                if players:
-                    categories.append({'name': name, 'abbr': abbr, 'players': players})
+            catIndex = html.find(search)
+            if catIndex == -1:
+                continue
+            
+            sectionStart = catIndex
+            sectionEnd = catIndex + 10000
+            section = html[sectionStart:sectionEnd]
+            
+            players = []
+            rowMatches = re.findall(r'<tr[\s\S]*?</tr>', section, re.IGNORECASE)
+            
+            for rowHtml in rowMatches[:10]:
+                playerMatch = re.search(r'person[^"]*">([^<]+)<', rowHtml)
+                teamMatch = re.search(r'class\s*=\s*"team"[^>]*>[\s]*<a[^>]*>([^<]+)<', rowHtml)
+                valueMatch = re.search(r'<td[^>]*>([\d.]+)</td>', rowHtml)
+                
+                if playerMatch:
+                    fullTeam = teamMatch.group(1).strip() if teamMatch else ""
+                    players.append({
+                        'name': playerMatch.group(1).strip(),
+                        'team': fullTeam,
+                        'abbr': TEAM_MAP.get(fullTeam, ''),
+                        'value': valueMatch.group(1).strip() if valueMatch else ''
+                    })
+            
+            if players:
+                categories.append({'name': name, 'abbr': abbr, 'players': players})
         
         return jsonify({'categories': categories, 'count': len(categories)})
     except Exception as e:
@@ -903,19 +908,48 @@ def get_schedule():
         games = []
         
         for row in soup.find_all('tr'):
+            cells = row.find_all('td')
             teams = row.find_all('a', href=lambda h: h and '/team/' in h if h else False)
             if len(teams) >= 2:
                 home = teams[0].get_text(strip=True)
                 away = teams[1].get_text(strip=True)
-                date_cell = row.find('td', class_=lambda x: 'date' in x if x else False)
-                date = date_cell.get_text(strip=True) if date_cell else ''
-                games.append({
-                    'date': date,
-                    'home': home,
-                    'away': away,
-                    'home_abbr': TEAM_MAP.get(home, ''),
-                    'away_abbr': TEAM_MAP.get(away, '')
-                })
+                
+                # Extract date from cells
+                date = ""
+                for cell in cells:
+                    cell_text = cell.get_text(strip=True)
+                    if any(month in cell_text for month in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']):
+                        date = cell_text
+                        break
+                    if re.search(r'\d{1,2}:\d{2}', cell_text):
+                        date = cell_text
+                        break
+                
+                # Check for scores
+                scores = re.findall(r'\d+\s*-\s*\d+', row.get_text())
+                if scores:
+                    parts = re.split(r'\s*-\s*', scores[0])
+                    games.append({
+                        'date': date,
+                        'home': home,
+                        'away': away,
+                        'home_abbr': TEAM_MAP.get(home, ''),
+                        'away_abbr': TEAM_MAP.get(away, ''),
+                        'home_score': parts[0].strip() if len(parts) >= 1 else '',
+                        'away_score': parts[1].strip() if len(parts) >= 2 else '',
+                        'status': 'COMPLETED' if len(parts) >= 2 else 'SCHEDULED'
+                    })
+                else:
+                    games.append({
+                        'date': date,
+                        'home': home,
+                        'away': away,
+                        'home_abbr': TEAM_MAP.get(home, ''),
+                        'away_abbr': TEAM_MAP.get(away, ''),
+                        'home_score': '',
+                        'away_score': '',
+                        'status': 'SCHEDULED'
+                    })
         
         return jsonify({'schedule': games, 'count': len(games)})
     except Exception as e:
@@ -935,7 +969,7 @@ def get_team_stats():
         
         for row in soup.find_all('tr'):
             cells = row.find_all('td')
-            if len(cells) >= 12:
+            if len(cells) >= 13:
                 team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
                 if team_link:
                     team_name = team_link.get_text(strip=True)
