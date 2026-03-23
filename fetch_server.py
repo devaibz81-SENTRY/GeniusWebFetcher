@@ -7,6 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import os
+import re
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -782,65 +783,50 @@ TEAM_MAP = {
 
 @app.route('/standings')
 def get_standings():
-    """Return standings data - Parse HTML with table.standings structure"""
-    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/standings?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    """Return standings data - Parse HTML directly like legacy code"""
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/standings"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-        data = resp.json()
-        html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
+        html = resp.text
         standings = []
         
-        # Find the standings table
-        table = soup.find('table', class_='standings')
-        if not table:
-            # Try finding any table with standings in class
-            table = soup.find('table', class_=lambda x: x and 'standings' in x)
+        # Extract all td cells (like legacy code)
+        td_pattern = re.compile(r'<td[^>]*>([\s\S]*?)</td>', re.IGNORECASE)
+        cells = []
+        for match in td_pattern.finditer(html):
+            cell_html = match.group(1)
+            # Clean HTML tags and decode entities
+            cell_text = re.sub(r'<[^>]*>', ' ', cell_html)
+            cell_text = cell_text.replace('&nbsp;', '').replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"')
+            cell_text = re.sub(r'\s+', ' ', cell_text).strip()
+            cells.append(cell_text)
         
-        if table:
-            for row in table.find_all('tr'):
-                row_class = ' '.join(row.get('class', []))
-                # Check if this is a team row (class contains standings_team)
-                if 'standings_team' in row_class:
-                    cells = row.find_all('td')
-                    if len(cells) >= 11:
-                        # Get team name from span.team-name-full
-                        team_cell = row.find('td', class_='team-name')
-                        team_name = ''
-                        team_code = ''
-                        if team_cell:
-                            span_full = team_cell.find('span', class_='team-name-full')
-                            span_code = team_cell.find('span', class_='team-name-code')
-                            team_name = span_full.get_text(strip=True) if span_full else ''
-                            team_code = span_code.get_text(strip=True) if span_code else ''
-                        
-                        if not team_name:
-                            team_link = row.find('a', href=lambda h: h and '/team/' in h if h else False)
-                            if team_link:
-                                span = team_link.find('span', class_='team-name-full')
-                                team_name = span.get_text(strip=True) if span else team_link.get_text(strip=True)
-                        
-                        # Extract team ID from class for mapping
-                        team_id_match = re.search(r'standings_team_(\d+)', row_class)
-                        team_id = team_id_match.group(1) if team_id_match else ''
-                        
-                        standings.append({
-                            'rank': cells[0].get_text(strip=True),
-                            'team': team_name,
-                            'code': team_code,
-                            'abbr': TEAM_MAP.get(team_name, team_code),
-                            'team_id': team_id,
-                            'pts': cells[3].get_text(strip=True) if len(cells) > 3 else '',
-                            'w': cells[4].get_text(strip=True) if len(cells) > 4 else '',
-                            'l': cells[5].get_text(strip=True) if len(cells) > 5 else '',
-                            'gp': cells[6].get_text(strip=True) if len(cells) > 6 else '',
-                            'streak': cells[7].get_text(strip=True) if len(cells) > 7 else '',
-                            'for': cells[8].get_text(strip=True) if len(cells) > 8 else '',
-                            'against': cells[9].get_text(strip=True) if len(cells) > 9 else '',
-                            'diff': cells[10].get_text(strip=True) if len(cells) > 10 else ''
-                        })
+        # Legacy code uses cells: 0=rank, 2=team, 3=pts, 4=w, 5=l, 6=gp, 7=str, 8=for, 9=agst, 10=gd
+        # Each team row has ~11 cells
+        for i in range(0, len(cells) - 10, 11):
+            if i + 10 < len(cells):
+                rank = cells[i] if cells[i] else ''
+                team_raw = cells[i + 2] if i + 2 < len(cells) else ''
+                # Remove team code suffix (e.g., "CWB" at end)
+                team_name = re.sub(r'[A-Z]{2,}$', '', team_raw).strip()
+                team_code = team_raw.replace(team_name, '').strip()
+                
+                if team_name and rank and rank.isdigit():
+                    standings.append({
+                        'rank': rank,
+                        'team': team_name,
+                        'code': team_code,
+                        'abbr': TEAM_MAP.get(team_name, team_code),
+                        'pts': cells[i + 3] if i + 3 < len(cells) else '0',
+                        'w': cells[i + 4] if i + 4 < len(cells) else '0',
+                        'l': cells[i + 5] if i + 5 < len(cells) else '0',
+                        'gp': cells[i + 6] if i + 6 < len(cells) else '0',
+                        'streak': cells[i + 7] if i + 7 < len(cells) else '-',
+                        'for': cells[i + 8] if i + 8 < len(cells) else '0',
+                        'against': cells[i + 9] if i + 9 < len(cells) else '0',
+                        'diff': cells[i + 10] if i + 10 < len(cells) else '0'
+                    })
         
-        # Cache the data
         all_data_cache['standings'] = {
             'data': standings,
             'fetched_at': datetime.now().isoformat()
@@ -858,12 +844,10 @@ def get_standings():
 @app.route('/leaders')
 def get_leaders():
     """Return leaders data - Parse HTML with dblock div structure"""
-    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/leaders?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fleaders&_cc=1&_lc=1&_nv=1&_mf=1"
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/leaders"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-        data = resp.json()
-        html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
         categories = []
         
@@ -970,6 +954,52 @@ def get_leaders():
         return jsonify({'error': str(e), 'categories': []})
 
 
+@app.route('/players')
+def get_players():
+    """Return all players from players page - Parse HTML with playerblock divs"""
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/players"
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        players = []
+        
+        # Find all player blocks
+        for player_div in soup.find_all('div', class_='playerblock'):
+            player_link = player_div.find('a', class_='playername')
+            if player_link:
+                href = player_link.get('href', '')
+                # Extract player ID from URL like /person/XXXXX
+                player_id_match = re.search(r'/person/(\d+)', href)
+                player_id = player_id_match.group(1) if player_id_match else ''
+                
+                # Get player name
+                player_name = player_link.get_text(strip=True)
+                
+                # Get photo URL if exists
+                photo_div = player_div.find('div', class_='playerphoto')
+                photo_url = ''
+                if photo_div:
+                    img = photo_div.find('img')
+                    if img:
+                        photo_url = img.get('src', '')
+                
+                if player_name:
+                    players.append({
+                        'id': player_id,
+                        'name': player_name,
+                        'photo': photo_url,
+                        'url': href
+                    })
+        
+        return jsonify({
+            'players': players,
+            'count': len(players),
+            'fetched_at': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'players': [], 'count': 0})
+
+
 @app.route('/standings-direct')
 def get_standings_direct():
     """Return standings data - Fetch directly from page URL (fallback)"""
@@ -1031,12 +1061,10 @@ def get_standings_direct():
 @app.route('/schedule')
 def get_schedule():
     """Return schedule data - Parse HTML with match-wrap divs"""
-    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/schedule?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2Fcompetitions%2F%3Fcu%3DBEBL%2Fschedule&_cc=1&_lc=1&_nv=1&_mf=1"
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/schedule"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-        data = resp.json()
-        html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(resp.text, 'html.parser')
         games = []
         
         # Parse div-based match structure
@@ -1093,12 +1121,10 @@ def get_schedule():
 @app.route('/team-stats')
 def get_team_stats():
     """Return team stats data - Parse HTML with dblock/table structure"""
-    url = f"https://hosted.dcd.shared.geniussports.com/embednf/BEBL/en/statistics/team?iurl=https%3A%2F%2Fnebl.web.geniussports.com%2F%3Fp%3D9&_cc=1&_lc=1&_nv=1&_mf=1"
+    url = "https://nebl.web.geniussports.com/competitions/?cu=BEBL/statistics/team"
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-        data = resp.json()
-        html = data.get('html', '')
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
         result = {
             'floor_game': [],
